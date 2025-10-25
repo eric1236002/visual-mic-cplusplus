@@ -1,0 +1,56 @@
+# Build directories
+build/
+cmake-build-*/
+
+# Compiled Object files
+*.o
+*.obj
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Compiled Static libraries
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+visual_microphone
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+
+# IDE specific
+.vscode/
+.idea/
+*.user
+*.suo
+*.sln
+*.vcxproj*
+
+# Output files
+*.wav
+*.avi
+*.mp4
+
+# OS specific
+.DS_Store
+Thumbs.db
+
+*.md
+!README.md
+
+*.mp4
+*.pgm
+*/output
+*/data*
+*/out
+*/cmake
+*.txt
