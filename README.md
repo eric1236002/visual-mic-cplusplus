@@ -46,6 +46,10 @@ make
 
 This will create the `visual_microphone` executable.
 
+## data
+
+[Chips2-2200Hz-Mary_MIDI-input.avi](https://data.csail.mit.edu/vidmag/VisualMic/Results/Chips2-2200Hz-Mary_MIDI-input.avi)
+
 ## Usage
 
 ### Step 1: Extract Video Frames
@@ -58,7 +62,7 @@ First, extract video frames using the provided script:
 
 **Example:**
 ```bash
-./scripts/extract_frames.sh video.mp4 frames
+./scripts/extract_frames.sh Chips2-2200Hz-Mary_MIDI-input.avi ./data/Chips2-2200Hz-Mary_MIDI-input 2200
 ```
 
 This will:
@@ -69,7 +73,7 @@ This will:
 ### Step 2: Process Frames
 
 ```bash
-./visual_microphone <frames_directory> [options]
+./scripts/demo.sh <frames_directory> [options]
 ```
 
 ### Options
@@ -81,14 +85,26 @@ This will:
 - `-r <norient>` : Number of orientations (default: 2)
 - `-h` : Show help message
 
+### example
+
+```bash
+./scripts/demo.sh ./data/Chips2-2200Hz-Mary_MIDI-input -o ./output/Chips2-2200Hz-Mary_MIDI-input_recovered.wav -s 2200 -d 0.1 -n 1 -r 2
+```
+
+### ALL
+
+```bash
+./test.sh
+```
+
 ### Complete Example
 
 ```bash
 # Extract frames
-./scripts/extract_frames.sh input_video.mp4 frames
+./scripts/extract_frames.sh Chips2-2200Hz-Mary_MIDI-input.avi ./data/Chips2-2200Hz-Mary_MIDI-input
 
 # Process frames and extract sound
-./visual_microphone frames -o output.wav -d 0.1 -n 1 -r 2
+./scripts/demo.sh ./data/Chips2-2200Hz-Mary_MIDI-input -o ./output/Chips2-2200Hz-Mary_MIDI-input_recovered.wav -s 2200 -d 0.1 -n 1 -r 2
 ```
 
 This will generate:

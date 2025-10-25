@@ -11,7 +11,7 @@ echo "======================================"
 echo
 
 # Check if executable exists
-if [ ! -f "../build/visual_microphone" ]; then
+if [ ! -f "./build/visual_microphone" ]; then
     echo -e "${RED}Error: visual_microphone executable not found!${NC}"
     echo "Please build the project first:"
     echo "  cd .."
@@ -20,9 +20,9 @@ if [ ! -f "../build/visual_microphone" ]; then
     exit 1
 fi
 
-EXECUTABLE="time ../build/visual_microphone"
+EXECUTABLE="time ./build/visual_microphone"
 
-INPUT_VIDEO="../data"
+INPUT_VIDEO="./data/Chips2-2200Hz-Mary_MIDI-input"
 FPS=2200
 DOWNSAMPLE=0.1
 NSCALE=1
@@ -31,7 +31,7 @@ NORIENT=2
 BASENAME=video
 
 # Default parameters
-OUTPUT_DIR="../output"
+OUTPUT_DIR="./output"
 mkdir -p "$OUTPUT_DIR"
 
 # Run with default parameters
@@ -55,7 +55,7 @@ if [ $? -eq 0 ]; then
     echo -e "${YELLOW}  - $OUTPUT_DIR/${BASENAME}_recovered_specsub.wav (enhanced with spectral subtraction)${NC}"
     echo
     echo "You can play the audio files with:"
-    echo "  ffplay ../$OUTPUT_DIR/${BASENAME}_recovered.wav"
+    echo "  ffplay $OUTPUT_DIR/${BASENAME}_recovered.wav"
     echo "  ffplay $OUTPUT_DIR/${BASENAME}_recovered_specsub.wav"
 else
     echo
