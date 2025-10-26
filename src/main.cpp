@@ -133,7 +133,7 @@ int main(int argc, char* argv[]) {
         auto extract_start = std::chrono::high_resolution_clock::now();
         auto sound = visualmic::soundFromVideoStreaming(frames_dir, nscale, norientation, downsample_factor);
         auto extract_end = std::chrono::high_resolution_clock::now();
-        auto extract_time = std::chrono::duration_cast<std::chrono::seconds>(extract_end - extract_start);
+        auto extract_time = std::chrono::duration_cast<std::chrono::duration<double>>(extract_end - extract_start);
         
         std::cout << "\nExtraction time: " << extract_time.count() << " seconds" << std::endl;
 
@@ -159,7 +159,7 @@ int main(int argc, char* argv[]) {
         std::cout << std::string(50, '=') << std::endl;
         
         auto total_end = std::chrono::high_resolution_clock::now();
-        auto total_time = std::chrono::duration_cast<std::chrono::seconds>(total_end - start_time);
+        auto total_time = std::chrono::duration_cast<std::chrono::duration<double>>(total_end - start_time);
         std::cout << "\nTotal time: " << total_time.count() << " seconds" << std::endl;
         std::cout << "Output file: " << output_file << std::endl;
         

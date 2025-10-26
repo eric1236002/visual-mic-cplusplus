@@ -174,11 +174,11 @@ std::vector<double> soundFromVideoStreaming(const std::string& frames_dir,
     std::cout << "Init (first frame + pyramid): " << init_time.count() << " s" << std::endl;
     if (frame_count > 0) {
         std::cout << "Per-frame average (over " << frame_count << ")" << std::endl;
-        std::cout << "  Load:       " << (acc_load_s / frame_count) << " s" << std::endl;
-        std::cout << "  Resize:     " << (acc_resize_s / frame_count) << " s" << std::endl;
-        std::cout << "  Normalize:  " << (acc_normalize_s / frame_count) << " s" << std::endl;
-        std::cout << "  Pyramid:    " << (acc_pyramid_s / frame_count) << " s" << std::endl;
-        std::cout << "  Band proc:  " << (acc_bandproc_s / frame_count) << " s" << std::endl;
+        std::cout << "  Load:       " << acc_load_s << " s" << std::endl;
+        std::cout << "  Resize:     " << acc_resize_s << " s" << std::endl;
+        std::cout << "  Normalize:  " << acc_normalize_s << " s" << std::endl;
+        std::cout << "  Pyramid:    " << acc_pyramid_s << " s" << std::endl;
+        std::cout << "  Band proc:  " << acc_bandproc_s << " s" << std::endl;
     }
     std::cout << "Align + sum:  " << align_time.count() << " s" << std::endl;
     std::cout << "Filter:       " << filter_time.count() << " s" << std::endl;

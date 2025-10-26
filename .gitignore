@@ -54,3 +54,4 @@ Thumbs.db
 */out
 */cmake
 *.txt
+!CMakeLists.txt

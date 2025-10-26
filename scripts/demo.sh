@@ -22,13 +22,14 @@ fi
 
 EXECUTABLE="time ./build/visual_microphone"
 
-INPUT_VIDEO="./data/Chips2-2200Hz-Mary_MIDI-input"
+INPUT_VIDEO="$1"
 FPS=2200
 DOWNSAMPLE=0.1
 NSCALE=1
 NORIENT=2
 # Extract base name for output files
-BASENAME=video
+# INPUT_VIDEO.split("/")[-1]
+BASENAME=${INPUT_VIDEO##*/}
 
 # Default parameters
 OUTPUT_DIR="./output"

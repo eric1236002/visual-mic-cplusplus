@@ -73,11 +73,9 @@ This will:
 ### Step 2: Process Frames
 
 ```bash
-./scripts/demo.sh <frames_directory> [options]
+./build/visual_microphone <frames_directory> <output_file>
 ```
-
-### Options
-
+#Options:
 - `-o <output>` : Output WAV file path (default: `recoveredsound.wav`)
 - `-s <sampling_rate>` : Video frame rate (default: auto from video_info.txt)
 - `-d <downsample>` : Downsample factor for processing (default: 0.1)
@@ -85,26 +83,9 @@ This will:
 - `-r <norient>` : Number of orientations (default: 2)
 - `-h` : Show help message
 
-### example
-
+**Example:**
 ```bash
-./scripts/demo.sh ./data/Chips2-2200Hz-Mary_MIDI-input -o ./output/Chips2-2200Hz-Mary_MIDI-input_recovered.wav -s 2200 -d 0.1 -n 1 -r 2
-```
-
-### ALL
-
-```bash
-./test.sh
-```
-
-### Complete Example
-
-```bash
-# Extract frames
-./scripts/extract_frames.sh Chips2-2200Hz-Mary_MIDI-input.avi ./data/Chips2-2200Hz-Mary_MIDI-input
-
-# Process frames and extract sound
-./scripts/demo.sh ./data/Chips2-2200Hz-Mary_MIDI-input -o ./output/Chips2-2200Hz-Mary_MIDI-input_recovered.wav -s 2200 -d 0.1 -n 1 -r 2
+./build/visual_microphone ./data/Chips2-2200Hz-Mary_MIDI-input -o ./output/Chips2-2200Hz-Mary_MIDI-input_recovered.wav -s 2200 -d 0.1 -n 1 -r 2
 ```
 
 This will generate:
