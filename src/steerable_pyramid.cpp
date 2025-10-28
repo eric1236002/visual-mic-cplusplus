@@ -3,6 +3,7 @@
 #include <cmath>
 #include <iostream>
 #include <signal_processing.h>
+#include <omp.h>
 
 namespace visualmic {
 
@@ -74,6 +75,7 @@ Matrix2D<double> SteerablePyramidFreq::buildRadialMask(int rows, int cols,
     createFrequencyGrid(rows, cols, fx, fy);
     
     Matrix2D<double> radius(rows, cols);
+    #pragma omp parallel for collapse(2)
     for (int i = 0; i < rows; ++i) {
         for (int j = 0; j < cols; ++j) {
             radius.at(i, j) = std::sqrt(fx.at(i, j) * fx.at(i, j) + 
@@ -106,6 +108,7 @@ Matrix2D<double> SteerablePyramidFreq::buildAngularMask(int rows, int cols,
     createFrequencyGrid(rows, cols, fx, fy);
     
     Matrix2D<double> angle(rows, cols);
+    #pragma omp parallel for collapse(2)
     for (int i = 0; i < rows; ++i) {
         for (int j = 0; j < cols; ++j) {
             angle.at(i, j) = std::atan2(fy.at(i, j), fx.at(i, j));

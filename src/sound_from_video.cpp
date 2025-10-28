@@ -8,6 +8,7 @@
 #include <map>
 #include <cmath>
 #include <chrono>
+#include <omp.h>
 
 namespace visualmic {
 
@@ -22,9 +23,16 @@ std::vector<double> soundFromVideoStreaming(const std::string& frames_dir,
                                             int nscale, 
                                             int norientation, 
                                             double downsample_factor) {
-    
     std::vector<std::string> frame_files = getFrameFilesList(frames_dir);
     
+    /*------------------------------------
+    Here we initialize the signals map.
+    The structure of the map is:
+    signals[band][frame_idx] = signal for the band in each frame
+    We also create a vector of pairs of band key and a pair of complex matrices.
+    The first matrix is the coefficients of the current frame, the second matrix is the coefficients of the first frame.
+    This is the preprocessing step for the parallelization of the band processing.
+    ------------------------------------*/
     if (frame_files.empty()) {
         throw std::runtime_error("No frames found in directory");
     }
@@ -49,8 +57,7 @@ std::vector<double> soundFromVideoStreaming(const std::string& frames_dir,
     
     std::map<BandKey, std::vector<double>> signals;
     for (const auto& pair : first_pyramid_coeffs) {
-        signals[pair.first] = std::vector<double>();
-        signals[pair.first].reserve(nframes); 
+        signals[pair.first] = std::vector<double>(nframes, 0.0);
     }
     
     std::cout << "Processing frames (streaming mode - low memory usage)..." << std::endl;
@@ -64,36 +71,63 @@ std::vector<double> soundFromVideoStreaming(const std::string& frames_dir,
     double acc_pyramid_s = 0.0;
     double acc_bandproc_s = 0.0;
     
-    for (const auto& frame_file : frame_files) {
+    /*------------------------------------
+    Here we process the frames in parallel.
+    First we load the frame, then we resize it if needed, 
+    then we normalize it, then we create the steerable pyramid, 
+    then we process the bands in parallel. 
+    Finally we align the signals and sum them.
+    ------------------------------------*/
+    #pragma omp parallel for schedule(dynamic) reduction(+:acc_load_s,acc_resize_s,acc_normalize_s,acc_pyramid_s,acc_bandproc_s)
+    for (int frame_idx = 0; frame_idx < nframes; ++frame_idx) {
+        const std::string& frame_file = frame_files[frame_idx];
+
         auto t_load_start = std::chrono::high_resolution_clock::now();
-        gray_frame = loadPGMFrame(frame_file);
+        Matrix2D<double> gray_frame_local = loadPGMFrame(frame_file);
         auto t_load_end = std::chrono::high_resolution_clock::now();
         acc_load_s += std::chrono::duration_cast<std::chrono::duration<double>>(t_load_end - t_load_start).count();
         
         if (downsample_factor < 1.0) {
             auto t_resize_start = std::chrono::high_resolution_clock::now();
-            gray_frame = resizeImage(gray_frame, downsample_factor);
+            gray_frame_local = resizeImage(gray_frame_local, downsample_factor);
             auto t_resize_end = std::chrono::high_resolution_clock::now();
             acc_resize_s += std::chrono::duration_cast<std::chrono::duration<double>>(t_resize_end - t_resize_start).count();
         }
         
         auto t_norm_start = std::chrono::high_resolution_clock::now();
-        norm_frame = normalizeMatrix(gray_frame);
+        Matrix2D<double> norm_frame_local = normalizeMatrix(gray_frame_local);
         auto t_norm_end = std::chrono::high_resolution_clock::now();
         acc_normalize_s += std::chrono::duration_cast<std::chrono::duration<double>>(t_norm_end - t_norm_start).count();
         
         auto t_pyr_start = std::chrono::high_resolution_clock::now();
-        SteerablePyramidFreq pyramid(norm_frame, nscale, norientation - 1);
+        SteerablePyramidFreq pyramid(norm_frame_local, nscale, norientation - 1);
         auto pyramid_coeffs = pyramid.getPyrCoeffs();
         auto t_pyr_end = std::chrono::high_resolution_clock::now();
         acc_pyramid_s += std::chrono::duration_cast<std::chrono::duration<double>>(t_pyr_end - t_pyr_start).count();
         
         auto t_bandproc_start = std::chrono::high_resolution_clock::now();
+
+
+        /*------------------------------------
+        Here we create a vector of pairs of band key and a pair of complex matrices.
+        The first matrix is the coefficients of the current frame, the second matrix is the coefficients of the first frame.
+        This is the preprocessing step for the parallelization of the band processing.
+        ------------------------------------*/
+        std::vector<std::pair<BandKey, std::pair<Matrix2D<Complex>, Matrix2D<Complex>>>> band_tasks;
+        band_tasks.reserve(pyramid_coeffs.size());
         for (const auto& band_pair : pyramid_coeffs) {
             BandKey band = band_pair.first;
             Matrix2D<Complex> coeffs = band_pair.second;
-            Matrix2D<Complex> first_coeffs = first_pyramid_coeffs[band];
-            
+            Matrix2D<Complex> first_coeffs = first_pyramid_coeffs.at(band);
+            band_tasks.emplace_back(band, std::make_pair(coeffs, first_coeffs));
+        }
+
+        #pragma omp parallel for schedule(dynamic) if(!omp_in_parallel())
+        for (size_t task_idx = 0; task_idx < band_tasks.size(); ++task_idx) {
+            BandKey band = band_tasks[task_idx].first;
+            Matrix2D<Complex> coeffs = band_tasks[task_idx].second.first;
+            Matrix2D<Complex> first_coeffs = band_tasks[task_idx].second.second;
+
             Matrix2D<double> amp = magnitude(coeffs);
             Matrix2D<double> angle_curr = phase(coeffs);
             Matrix2D<double> angle_first = phase(first_coeffs);
@@ -111,29 +145,17 @@ std::vector<double> soundFromVideoStreaming(const std::string& frames_dir,
             
             double total_amp_squared = matrixSum(amp_squared);
             double sum_sms = matrixSum(sms);
-            
-            if (total_amp_squared > 1e-10) {
-                signals[band].push_back(sum_sms / total_amp_squared);
-            } else {
-                signals[band].push_back(0.0);
-            }
+
+            double signal_value = (total_amp_squared > 1e-10) ? (sum_sms / total_amp_squared) : 0.0;
+
+            signals[band][frame_idx] = signal_value;
         }
+
         auto t_bandproc_end = std::chrono::high_resolution_clock::now();
         acc_bandproc_s += std::chrono::duration_cast<std::chrono::duration<double>>(t_bandproc_end - t_bandproc_start).count();
-        
-        if (frame_count == 100) {
-            auto end_time = std::chrono::high_resolution_clock::now();
-            duration = std::chrono::duration_cast<std::chrono::duration<double>>(end_time - start_time);
-            double total_time = duration.count() * (nframes / 100 - 1) / 60;
-            std::cout << "\nCost time: " << duration.count() * 10 << " seconds \nRemaining time: " 
-                     << total_time << " minutes = " << total_time * 60 << " seconds" << std::endl;
-        }
-        frame_count++;
-        
-        if (frame_count % 100 == 0) {
-            std::cout << "\rProcessed " << frame_count << "/" << nframes << " frames" << std::flush;
-        }
     }
+
+    frame_count = nframes;
     
     std::cout << "\nTotal frames processed: " << frame_count << std::endl;
         
@@ -147,11 +169,25 @@ std::vector<double> soundFromVideoStreaming(const std::string& frames_dir,
     
     std::vector<double> reference_signal = signals[reference_band];
     
-    for (auto& sig_pair : signals) {
+    /*
+        for (auto& sig_pair : signals) {
         std::vector<double> sig = sig_pair.second;
         
             std::vector<double> sig_aligned = alignVectors(sig, reference_signal);
         
+        for (size_t i = 0; i < sound.size() && i < sig_aligned.size(); ++i) {
+            sound[i] += sig_aligned[i];
+        }
+    }*/
+    
+    std::vector<std::pair<BandKey, std::vector<double>>> signal_pairs(signals.begin(), signals.end());
+
+    for (size_t idx = 0; idx < signal_pairs.size(); ++idx) {
+        signal_pairs[idx].second = alignVectors(signal_pairs[idx].second, reference_signal);
+    }
+    
+    for (const auto& sig_pair : signal_pairs) {
+        const std::vector<double>& sig_aligned = sig_pair.second;
         for (size_t i = 0; i < sound.size() && i < sig_aligned.size(); ++i) {
             sound[i] += sig_aligned[i];
         }

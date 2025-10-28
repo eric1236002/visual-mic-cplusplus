@@ -7,6 +7,7 @@ This implementation is based on the original [MATLAB version](http://people.csai
 ## Key Features
 
 - **Memory Efficient**: Streaming processing for large videos (no memory limitations)
+- **Parallel Processing**: Full OpenMP parallelization for multi-core CPUs
 - **No External Dependencies**: Pure C++ implementation with minimal dependencies
 - **High Performance**: Optimized algorithms for real-time processing
 - **Cross Platform**: Works on macOS, Linux, and Windows
@@ -16,20 +17,21 @@ This implementation is based on the original [MATLAB version](http://people.csai
 ## Requirements
 
 - CMake 3.15 or higher
-- C++17 compatible compiler (GCC 7+, Clang 5+, MSVC 2017+)
+- C++17 compatible compiler with OpenMP support (GCC 7+, Clang 5+, MSVC 2017+)
 - FFmpeg (for video frame extraction)
+- OpenMP library (usually included with compiler)
 
 ### Installing Dependencies
 
 #### Ubuntu/Debian
 ```bash
 sudo apt-get update
-sudo apt-get install cmake g++ ffmpeg       
+sudo apt-get install cmake g++ ffmpeg libomp-dev
 ```
 
 #### macOS (with Homebrew)
 ```bash
-brew install cmake ffmpeg
+brew install cmake ffmpeg libomp
 ```
 
 #### Windows
@@ -41,11 +43,10 @@ brew install cmake ffmpeg
 mkdir build
 cd build
 cmake ..
-make
+make -j$(nproc)
 ```
 
 This will create the `visual_microphone` executable.
-
 ## data
 
 [Chips2-2200Hz-Mary_MIDI-input.avi](https://data.csail.mit.edu/vidmag/VisualMic/Results/Chips2-2200Hz-Mary_MIDI-input.avi)
@@ -90,6 +91,22 @@ This will:
 
 This will generate:
 - `output.wav` - The recovered sound from video vibrations
+- `output_specsub.wav` - Enhanced version with spectral subtraction
+
+### Controlling Thread Count
+
+The program automatically uses all available CPU cores. You can control the number of threads:
+
+```bash
+# Use 4 threads
+export OMP_NUM_THREADS=4
+./build/visual_microphone <frames_directory> -o <output>
+
+# Use all available cores (default)
+unset OMP_NUM_THREADS
+./build/visual_microphone <frames_directory> -o <output>
+```
+
 
 ## How It Works
 
@@ -138,8 +155,6 @@ This implementation includes from-scratch versions of:
 visual-mic-cpp/
 ├── CMakeLists.txt
 ├── README.md
-├── QUICKSTART.md
-├── MEMORY_OPTIMIZATION.md
 ├── scripts/
 │   └── extract_frames.sh          # Video frame extraction script
 ├── include/
