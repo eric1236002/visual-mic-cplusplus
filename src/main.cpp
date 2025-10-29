@@ -6,7 +6,7 @@
 #include "sound_from_video.h"
 #include "frame_loader.h"
 #include "signal_processing.h"
-
+#include <omp.h>
 void printUsage(const char* program_name) {
     std::cout << "Usage: " << program_name << " <input_frames_dir> [options]\n"
               << "\nNote: This version uses pre-extracted frames from FFmpeg.\n"
@@ -71,7 +71,8 @@ int main(int argc, char* argv[]) {
         printUsage(argv[0]);
         return 1;
     }
-    
+    int num_threads = omp_get_max_threads();
+    std::cout << "Using " << num_threads << " threads" << std::endl;
     std::string frames_dir = argv[1];
     std::string output_file = "recoveredsound.wav";
     int sampling_rate = -1;  
