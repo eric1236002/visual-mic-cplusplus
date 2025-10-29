@@ -75,7 +75,7 @@ Matrix2D<double> SteerablePyramidFreq::buildRadialMask(int rows, int cols,
     createFrequencyGrid(rows, cols, fx, fy);
     
     Matrix2D<double> radius(rows, cols);
-    #pragma omp parallel for collapse(2)
+    #pragma omp parallel for collapse(2)schedule(static)
     for (int i = 0; i < rows; ++i) {
         for (int j = 0; j < cols; ++j) {
             radius.at(i, j) = std::sqrt(fx.at(i, j) * fx.at(i, j) + 
