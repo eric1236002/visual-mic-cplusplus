@@ -8,6 +8,7 @@
 #include <map>
 #include <cmath>
 #include <chrono>
+#include <mpi.h>
 
 namespace visualmic {
 
@@ -23,6 +24,10 @@ std::vector<double> soundFromVideoStreaming(const std::string& frames_dir,
                                             int norientation, 
                                             double downsample_factor) {
     
+    int rank, size;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    
     std::vector<std::string> frame_files = getFrameFilesList(frames_dir);
     
     if (frame_files.empty()) {
@@ -30,10 +35,12 @@ std::vector<double> soundFromVideoStreaming(const std::string& frames_dir,
     }
     
     int nframes = frame_files.size();
-    std::cout << "Found " << nframes << " frames to process (streaming mode)" << std::endl;
+    if (rank == 0)
+        std::cout << "Found " << nframes << " frames to process (streaming mode)" << std::endl;
     
     auto init_start = std::chrono::high_resolution_clock::now();
-    std::cout << "Loading first frame..." << std::endl;
+    if (rank == 0)
+        std::cout << "Loading first frame..." << std::endl;
     Matrix2D<double> gray_frame = loadPGMFrame(frame_files[0]);
     
     if (downsample_factor < 1.0) {
@@ -52,8 +59,8 @@ std::vector<double> soundFromVideoStreaming(const std::string& frames_dir,
         signals[pair.first] = std::vector<double>();
         signals[pair.first].reserve(nframes); 
     }
-    
-    std::cout << "Processing frames (streaming mode - low memory usage)..." << std::endl;
+    if (rank == 0)
+        std::cout << "Processing frames (streaming mode - low memory usage)..." << std::endl;
     
     int frame_count = 0;
     auto start_time = std::chrono::high_resolution_clock::now();
@@ -64,8 +71,15 @@ std::vector<double> soundFromVideoStreaming(const std::string& frames_dir,
     double acc_pyramid_s = 0.0;
     double acc_bandproc_s = 0.0;
     
-    for (const auto& frame_file : frame_files) {
+    // Divide frames among processes
+    int frames_per_process = frame_files.size() / size;
+    int remainder = frame_files.size() % size;
+    int start_idx = rank * frames_per_process + std::min(rank, remainder);
+    int end_idx = start_idx + frames_per_process + (rank < remainder ? 1 : 0);
+    
+    for (int idx = start_idx; idx < end_idx; ++idx) {
         auto t_load_start = std::chrono::high_resolution_clock::now();
+        const auto& frame_file = frame_files[idx];
         gray_frame = loadPGMFrame(frame_file);
         auto t_load_end = std::chrono::high_resolution_clock::now();
         acc_load_s += std::chrono::duration_cast<std::chrono::duration<double>>(t_load_end - t_load_start).count();
@@ -121,7 +135,7 @@ std::vector<double> soundFromVideoStreaming(const std::string& frames_dir,
         auto t_bandproc_end = std::chrono::high_resolution_clock::now();
         acc_bandproc_s += std::chrono::duration_cast<std::chrono::duration<double>>(t_bandproc_end - t_bandproc_start).count();
         
-        if (frame_count == 100) {
+        if (rank == 0 && frame_count == 100) {
             auto end_time = std::chrono::high_resolution_clock::now();
             duration = std::chrono::duration_cast<std::chrono::duration<double>>(end_time - start_time);
             double total_time = duration.count() * (nframes / 100 - 1) / 60;
@@ -130,12 +144,12 @@ std::vector<double> soundFromVideoStreaming(const std::string& frames_dir,
         }
         frame_count++;
         
-        if (frame_count % 100 == 0) {
-            std::cout << "\rProcessed " << frame_count << "/" << nframes << " frames" << std::flush;
+        if (rank == 0 && frame_count % 100 == 0) {
+            std::cout << "\rProcessed " << frame_count << "/" << end_idx - start_idx << " frames" << std::flush;
         }
     }
     
-    std::cout << "\nTotal frames processed: " << frame_count << std::endl;
+    std::cout << "rank: " << rank << "\nTotal frames processed: " << frame_count << std::endl;
         
     auto align_start = std::chrono::high_resolution_clock::now();
     std::vector<double> sound(frame_count, 0.0);
@@ -170,7 +184,8 @@ std::vector<double> soundFromVideoStreaming(const std::string& frames_dir,
     auto scale_end = std::chrono::high_resolution_clock::now();
     auto scale_time = std::chrono::duration_cast<std::chrono::duration<double>>(scale_end - scale_start);
 
-    std::cout << "\n\n=== Timing Report (soundFromVideoStreaming) ===" << std::endl;
+    std::cout << "\n\nrank: " << rank << std::endl;
+    std::cout << "=== Timing Report (soundFromVideoStreaming) ===" << std::endl;
     std::cout << "Init (first frame + pyramid): " << init_time.count() << " s" << std::endl;
     if (frame_count > 0) {
         std::cout << "Per-frame average (over " << frame_count << ")" << std::endl;

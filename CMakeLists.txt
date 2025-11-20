@@ -7,9 +7,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Add local cmake modules
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/cmake/")
 
+# Find MPI package
+find_package(MPI REQUIRED)
+
 # Include directories
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${MPI_CXX_INCLUDE_DIRS}
 )
 
 # Source files
@@ -36,6 +40,23 @@ set(HEADERS
 # Create executable
 add_executable(visual_microphone ${SOURCES} ${HEADERS})
 
+# Link MPI libraries
+target_link_libraries(visual_microphone 
+    PUBLIC 
+    MPI::MPI_CXX
+)
+
+# Add MPI compile flags
+target_compile_options(visual_microphone 
+    PRIVATE 
+    ${MPI_CXX_COMPILE_FLAGS}
+)
+
+# Add MPI link flags
+set_target_properties(visual_microphone 
+    PROPERTIES 
+    LINK_FLAGS "${MPI_CXX_LINK_FLAGS}"
+)
 
 # Installation
 install(TARGETS visual_microphone DESTINATION bin)
