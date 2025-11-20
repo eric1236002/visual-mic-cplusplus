@@ -8,6 +8,8 @@
 #include <map>
 #include <cmath>
 #include <chrono>
+#include <unistd.h>
+#include <vector>
 
 namespace visualmic {
 
@@ -15,6 +17,55 @@ Matrix2D<double> resizeImage(const Matrix2D<double>& img, double scale_factor) {
     int new_rows = static_cast<int>(img.rows * scale_factor);
     int new_cols = static_cast<int>(img.cols * scale_factor);
     return resizeMatrix(img, new_rows, new_cols);
+}
+
+void* process_frames_thread(void* thread_arg) {
+    ThreadData* data = static_cast<ThreadData*>(thread_arg);
+    auto first_pyramid_coeffs = data->first_pyramid->getPyrCoeffs();
+
+    for (int i = data->start_frame; i < data->end_frame; ++i) {
+        const std::string& frame_file = (*data->frame_files)[i];
+        Matrix2D<double> gray_frame = loadPGMFrame(frame_file);
+
+        if (data->downsample_factor < 1.0) {
+            gray_frame = resizeImage(gray_frame, data->downsample_factor);
+        }
+
+        Matrix2D<double> norm_frame = normalizeMatrix(gray_frame);
+        SteerablePyramidFreq pyramid(norm_frame, data->nscale, data->norientation - 1);
+        auto pyramid_coeffs = pyramid.getPyrCoeffs();
+
+        for (const auto& band_pair : pyramid_coeffs) {
+            BandKey band = band_pair.first;
+            Matrix2D<Complex> coeffs = band_pair.second;
+            Matrix2D<Complex> first_coeffs = first_pyramid_coeffs.at(band);
+
+            Matrix2D<double> amp = magnitude(coeffs);
+            Matrix2D<double> angle_curr = phase(coeffs);
+            Matrix2D<double> angle_first = phase(first_coeffs);
+
+            Matrix2D<double> dphase(angle_curr.rows, angle_curr.cols);
+            for (int r = 0; r < angle_curr.rows; ++r) {
+                for (int c = 0; c < angle_curr.cols; ++c) {
+                    double diff = angle_curr.at(r, c) - angle_first.at(r, c);
+                    dphase.at(r, c) = moduloPi(diff);
+                }
+            }
+
+            Matrix2D<double> amp_squared = elementwiseMultiply(amp, amp);
+            Matrix2D<double> sms = elementwiseMultiply(dphase, amp_squared);
+
+            double total_amp_squared = matrixSum(amp_squared);
+            double sum_sms = matrixSum(sms);
+
+            if (total_amp_squared > 1e-10) {
+                data->signals[band].push_back(sum_sms / total_amp_squared);
+            } else {
+                data->signals[band].push_back(0.0);
+            }
+        }
+    }
+    return nullptr;
 }
 
 
@@ -43,102 +94,47 @@ std::vector<double> soundFromVideoStreaming(const std::string& frames_dir,
     Matrix2D<double> norm_frame = normalizeMatrix(gray_frame);
     
     SteerablePyramidFreq first_pyramid(norm_frame, nscale, norientation - 1);
-    auto first_pyramid_coeffs = first_pyramid.getPyrCoeffs();
     auto init_end = std::chrono::high_resolution_clock::now();
     auto init_time = std::chrono::duration_cast<std::chrono::duration<double>>(init_end - init_start);
     
-    std::map<BandKey, std::vector<double>> signals;
-    for (const auto& pair : first_pyramid_coeffs) {
-        signals[pair.first] = std::vector<double>();
-        signals[pair.first].reserve(nframes); 
-    }
-    
     std::cout << "Processing frames (streaming mode - low memory usage)..." << std::endl;
-    
-    int frame_count = 0;
-    auto start_time = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double> duration = std::chrono::duration<double>::zero();
-    double acc_load_s = 0.0;
-    double acc_resize_s = 0.0;
-    double acc_normalize_s = 0.0;
-    double acc_pyramid_s = 0.0;
-    double acc_bandproc_s = 0.0;
-    
-    for (const auto& frame_file : frame_files) {
-        auto t_load_start = std::chrono::high_resolution_clock::now();
-        gray_frame = loadPGMFrame(frame_file);
-        auto t_load_end = std::chrono::high_resolution_clock::now();
-        acc_load_s += std::chrono::duration_cast<std::chrono::duration<double>>(t_load_end - t_load_start).count();
+
+    int num_threads = sysconf(_SC_NPROCESSORS_ONLN);
+    std::vector<ThreadData> thread_data(num_threads);
+    int frames_per_thread = nframes / num_threads;
+
+    for (int i = 0; i < num_threads; ++i) {
+        thread_data[i].frame_files = &frame_files;
+        thread_data[i].start_frame = i * frames_per_thread;
+        thread_data[i].end_frame = (i == num_threads - 1) ? nframes : (i + 1) * frames_per_thread;
+        thread_data[i].nscale = nscale;
+        thread_data[i].norientation = norientation;
+        thread_data[i].downsample_factor = downsample_factor;
+        thread_data[i].first_pyramid = &first_pyramid;
         
-        if (downsample_factor < 1.0) {
-            auto t_resize_start = std::chrono::high_resolution_clock::now();
-            gray_frame = resizeImage(gray_frame, downsample_factor);
-            auto t_resize_end = std::chrono::high_resolution_clock::now();
-            acc_resize_s += std::chrono::duration_cast<std::chrono::duration<double>>(t_resize_end - t_resize_start).count();
+        for (const auto& pair : first_pyramid.getPyrCoeffs()) {
+            thread_data[i].signals[pair.first] = std::vector<double>();
         }
-        
-        auto t_norm_start = std::chrono::high_resolution_clock::now();
-        norm_frame = normalizeMatrix(gray_frame);
-        auto t_norm_end = std::chrono::high_resolution_clock::now();
-        acc_normalize_s += std::chrono::duration_cast<std::chrono::duration<double>>(t_norm_end - t_norm_start).count();
-        
-        auto t_pyr_start = std::chrono::high_resolution_clock::now();
-        SteerablePyramidFreq pyramid(norm_frame, nscale, norientation - 1);
-        auto pyramid_coeffs = pyramid.getPyrCoeffs();
-        auto t_pyr_end = std::chrono::high_resolution_clock::now();
-        acc_pyramid_s += std::chrono::duration_cast<std::chrono::duration<double>>(t_pyr_end - t_pyr_start).count();
-        
-        auto t_bandproc_start = std::chrono::high_resolution_clock::now();
-        for (const auto& band_pair : pyramid_coeffs) {
-            BandKey band = band_pair.first;
-            Matrix2D<Complex> coeffs = band_pair.second;
-            Matrix2D<Complex> first_coeffs = first_pyramid_coeffs[band];
-            
-            Matrix2D<double> amp = magnitude(coeffs);
-            Matrix2D<double> angle_curr = phase(coeffs);
-            Matrix2D<double> angle_first = phase(first_coeffs);
-            
-            Matrix2D<double> dphase(angle_curr.rows, angle_curr.cols);
-            for (int i = 0; i < angle_curr.rows; ++i) {
-                for (int j = 0; j < angle_curr.cols; ++j) {
-                    double diff = angle_curr.at(i, j) - angle_first.at(i, j);
-                    dphase.at(i, j) = moduloPi(diff);
-                }
-            }
-            
-            Matrix2D<double> amp_squared = elementwiseMultiply(amp, amp);
-            Matrix2D<double> sms = elementwiseMultiply(dphase, amp_squared);
-            
-            double total_amp_squared = matrixSum(amp_squared);
-            double sum_sms = matrixSum(sms);
-            
-            if (total_amp_squared > 1e-10) {
-                signals[band].push_back(sum_sms / total_amp_squared);
-            } else {
-                signals[band].push_back(0.0);
-            }
+
+        int rc = pthread_create(&thread_data[i].thread_id, nullptr, process_frames_thread, &thread_data[i]);
+        if (rc) {
+            std::cerr << "Error:unable to create thread," << rc << std::endl;
+            exit(-1);
         }
-        auto t_bandproc_end = std::chrono::high_resolution_clock::now();
-        acc_bandproc_s += std::chrono::duration_cast<std::chrono::duration<double>>(t_bandproc_end - t_bandproc_start).count();
-        
-        if (frame_count == 100) {
-            auto end_time = std::chrono::high_resolution_clock::now();
-            duration = std::chrono::duration_cast<std::chrono::duration<double>>(end_time - start_time);
-            double total_time = duration.count() * (nframes / 100 - 1) / 60;
-            std::cout << "\nCost time: " << duration.count() * 10 << " seconds \nRemaining time: " 
-                     << total_time << " minutes = " << total_time * 60 << " seconds" << std::endl;
-        }
-        frame_count++;
-        
-        if (frame_count % 100 == 0) {
-            std::cout << "\rProcessed " << frame_count << "/" << nframes << " frames" << std::flush;
+    }
+
+    std::map<BandKey, std::vector<double>> signals;
+    for (int i = 0; i < num_threads; ++i) {
+        pthread_join(thread_data[i].thread_id, nullptr);
+        for (const auto& pair : thread_data[i].signals) {
+            signals[pair.first].insert(signals[pair.first].end(), pair.second.begin(), pair.second.end());
         }
     }
     
-    std::cout << "\nTotal frames processed: " << frame_count << std::endl;
+    std::cout << "\nTotal frames processed: " << nframes << std::endl;
         
     auto align_start = std::chrono::high_resolution_clock::now();
-    std::vector<double> sound(frame_count, 0.0);
+    std::vector<double> sound(nframes, 0.0);
     
     BandKey reference_band(0, 0);
     if (signals.find(reference_band) == signals.end()) {
@@ -150,7 +146,7 @@ std::vector<double> soundFromVideoStreaming(const std::string& frames_dir,
     for (auto& sig_pair : signals) {
         std::vector<double> sig = sig_pair.second;
         
-            std::vector<double> sig_aligned = alignVectors(sig, reference_signal);
+        std::vector<double> sig_aligned = alignVectors(sig, reference_signal);
         
         for (size_t i = 0; i < sound.size() && i < sig_aligned.size(); ++i) {
             sound[i] += sig_aligned[i];
@@ -172,14 +168,14 @@ std::vector<double> soundFromVideoStreaming(const std::string& frames_dir,
 
     std::cout << "\n\n=== Timing Report (soundFromVideoStreaming) ===" << std::endl;
     std::cout << "Init (first frame + pyramid): " << init_time.count() << " s" << std::endl;
-    if (frame_count > 0) {
-        std::cout << "Per-frame average (over " << frame_count << ")" << std::endl;
-        std::cout << "  Load:       " << acc_load_s << " s" << std::endl;
-        std::cout << "  Resize:     " << acc_resize_s << " s" << std::endl;
-        std::cout << "  Normalize:  " << acc_normalize_s << " s" << std::endl;
-        std::cout << "  Pyramid:    " << acc_pyramid_s << " s" << std::endl;
-        std::cout << "  Band proc:  " << acc_bandproc_s << " s" << std::endl;
-    }
+    // if (frame_count > 0) {
+    //     std::cout << "Per-frame average (over " << frame_count << ")" << std::endl;
+    //     std::cout << "  Load:       " << acc_load_s << " s" << std::endl;
+    //     std::cout << "  Resize:     " << acc_resize_s << " s" << std::endl;
+    //     std::cout << "  Normalize:  " << acc_normalize_s << " s" << std::endl;
+    //     std::cout << "  Pyramid:    " << acc_pyramid_s << " s" << std::endl;
+    //     std::cout << "  Band proc:  " << acc_bandproc_s << " s" << std::endl;
+    // }
     std::cout << "Align + sum:  " << align_time.count() << " s" << std::endl;
     std::cout << "Filter:       " << filter_time.count() << " s" << std::endl;
     std::cout << "Scale:        " << scale_time.count() << " s" << std::endl;

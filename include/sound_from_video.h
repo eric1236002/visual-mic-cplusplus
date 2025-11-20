@@ -3,7 +3,10 @@
 
 #include <vector>
 #include <string>
+#include <map>
+#include <pthread.h>
 #include "math_ops.h"
+#include "steerable_pyramid.h"
 
 namespace visualmic {
 
@@ -19,6 +22,18 @@ struct VideoInfo {
     double fps;
     int width;
     int height;
+};
+
+struct ThreadData {
+    const std::vector<std::string>* frame_files;
+    int start_frame;
+    int end_frame;
+    int nscale;
+    int norientation;
+    double downsample_factor;
+    const SteerablePyramidFreq* first_pyramid;
+    std::map<BandKey, std::vector<double>> signals;
+    pthread_t thread_id;
 };
 
 
