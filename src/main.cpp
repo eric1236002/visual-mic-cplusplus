@@ -18,6 +18,7 @@ void printUsage(const char* program_name) {
               << "  -d <downsample>     Downsample factor (default: 0.1)\n"
               << "  -n <nscale>         Number of pyramid scales (default: 1)\n"
               << "  -r <norient>        Number of orientations (default: 2)\n"
+              << "  -t <threads>        Number of threads (default: auto-detect CPU cores)\n"
               << "  -h                  Show this help message\n"
               << std::endl;
 }
@@ -78,6 +79,7 @@ int main(int argc, char* argv[]) {
     double downsample_factor = 0.1;
     int nscale = 1;
     int norientation = 2;
+    int num_threads = 0;  // 0 means auto-detect
     
 
     for (int i = 2; i < argc; ++i) {
@@ -96,6 +98,8 @@ int main(int argc, char* argv[]) {
             nscale = std::stoi(argv[++i]);
         } else if (arg == "-r" && i + 1 < argc) {
             norientation = std::stoi(argv[++i]);
+        } else if (arg == "-t" && i + 1 < argc) {
+            num_threads = std::stoi(argv[++i]);
         }
     }
     
@@ -128,10 +132,11 @@ int main(int argc, char* argv[]) {
         std::cout << "  Downsample factor: " << downsample_factor << std::endl;
         std::cout << "  Pyramid scales: " << nscale << std::endl;
         std::cout << "  Orientations: " << norientation << std::endl;
+        std::cout << "  Threads: " << (num_threads > 0 ? std::to_string(num_threads) : "auto-detect") << std::endl;
         
 
         auto extract_start = std::chrono::high_resolution_clock::now();
-        auto sound = visualmic::soundFromVideoStreaming(frames_dir, nscale, norientation, downsample_factor);
+        auto sound = visualmic::soundFromVideoStreaming(frames_dir, nscale, norientation, downsample_factor, num_threads);
         auto extract_end = std::chrono::high_resolution_clock::now();
         auto extract_time = std::chrono::duration_cast<std::chrono::duration<double>>(extract_end - extract_start);
         

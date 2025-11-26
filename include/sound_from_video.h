@@ -34,13 +34,22 @@ struct ThreadData {
     const SteerablePyramidFreq* first_pyramid;
     std::map<BandKey, std::vector<double>> signals;
     pthread_t thread_id;
+    
+    // Timing data
+    double total_load_time;
+    double total_resize_time;
+    double total_normalize_time;
+    double total_pyramid_time;
+    double total_bandproc_time;
+    int frames_processed;
 };
 
 
 std::vector<double> soundFromVideoStreaming(const std::string& frames_dir,
                                             int nscale, 
                                             int norientation, 
-                                            double downsample_factor = 1.0);
+                                            double downsample_factor = 1.0,
+                                            int num_threads = 0);
 
 } // namespace visualmic
 

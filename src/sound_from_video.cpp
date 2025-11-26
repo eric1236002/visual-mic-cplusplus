@@ -22,19 +22,42 @@ Matrix2D<double> resizeImage(const Matrix2D<double>& img, double scale_factor) {
 void* process_frames_thread(void* thread_arg) {
     ThreadData* data = static_cast<ThreadData*>(thread_arg);
     auto first_pyramid_coeffs = data->first_pyramid->getPyrCoeffs();
+    
+    // Initialize timing accumulators
+    data->total_load_time = 0.0;
+    data->total_resize_time = 0.0;
+    data->total_normalize_time = 0.0;
+    data->total_pyramid_time = 0.0;
+    data->total_bandproc_time = 0.0;
+    data->frames_processed = 0;
 
     for (int i = data->start_frame; i < data->end_frame; ++i) {
         const std::string& frame_file = (*data->frame_files)[i];
+        
+        auto load_start = std::chrono::high_resolution_clock::now();
         Matrix2D<double> gray_frame = loadPGMFrame(frame_file);
+        auto load_end = std::chrono::high_resolution_clock::now();
+        data->total_load_time += std::chrono::duration_cast<std::chrono::duration<double>>(load_end - load_start).count();
 
+        auto resize_start = std::chrono::high_resolution_clock::now();
         if (data->downsample_factor < 1.0) {
             gray_frame = resizeImage(gray_frame, data->downsample_factor);
         }
+        auto resize_end = std::chrono::high_resolution_clock::now();
+        data->total_resize_time += std::chrono::duration_cast<std::chrono::duration<double>>(resize_end - resize_start).count();
 
+        auto normalize_start = std::chrono::high_resolution_clock::now();
         Matrix2D<double> norm_frame = normalizeMatrix(gray_frame);
+        auto normalize_end = std::chrono::high_resolution_clock::now();
+        data->total_normalize_time += std::chrono::duration_cast<std::chrono::duration<double>>(normalize_end - normalize_start).count();
+        
+        auto pyramid_start = std::chrono::high_resolution_clock::now();
         SteerablePyramidFreq pyramid(norm_frame, data->nscale, data->norientation - 1);
         auto pyramid_coeffs = pyramid.getPyrCoeffs();
+        auto pyramid_end = std::chrono::high_resolution_clock::now();
+        data->total_pyramid_time += std::chrono::duration_cast<std::chrono::duration<double>>(pyramid_end - pyramid_start).count();
 
+        auto bandproc_start = std::chrono::high_resolution_clock::now();
         for (const auto& band_pair : pyramid_coeffs) {
             BandKey band = band_pair.first;
             Matrix2D<Complex> coeffs = band_pair.second;
@@ -64,6 +87,10 @@ void* process_frames_thread(void* thread_arg) {
                 data->signals[band].push_back(0.0);
             }
         }
+        auto bandproc_end = std::chrono::high_resolution_clock::now();
+        data->total_bandproc_time += std::chrono::duration_cast<std::chrono::duration<double>>(bandproc_end - bandproc_start).count();
+        
+        data->frames_processed++;
     }
     return nullptr;
 }
@@ -72,7 +99,8 @@ void* process_frames_thread(void* thread_arg) {
 std::vector<double> soundFromVideoStreaming(const std::string& frames_dir,
                                             int nscale, 
                                             int norientation, 
-                                            double downsample_factor) {
+                                            double downsample_factor,
+                                            int num_threads) {
     
     std::vector<std::string> frame_files = getFrameFilesList(frames_dir);
     
@@ -99,7 +127,12 @@ std::vector<double> soundFromVideoStreaming(const std::string& frames_dir,
     
     std::cout << "Processing frames (streaming mode - low memory usage)..." << std::endl;
 
-    int num_threads = sysconf(_SC_NPROCESSORS_ONLN);
+    // Auto-detect CPU cores if num_threads is 0 or negative
+    if (num_threads <= 0) {
+        num_threads = sysconf(_SC_NPROCESSORS_ONLN);
+    }
+    
+    std::cout << "Using " << num_threads << " threads for processing" << std::endl;
     std::vector<ThreadData> thread_data(num_threads);
     int frames_per_thread = nframes / num_threads;
 
@@ -124,11 +157,37 @@ std::vector<double> soundFromVideoStreaming(const std::string& frames_dir,
     }
 
     std::map<BandKey, std::vector<double>> signals;
+    double acc_load_s = 0.0;
+    double acc_resize_s = 0.0;
+    double acc_normalize_s = 0.0;
+    double acc_pyramid_s = 0.0;
+    double acc_bandproc_s = 0.0;
+    int frame_count = 0;
+    
     for (int i = 0; i < num_threads; ++i) {
         pthread_join(thread_data[i].thread_id, nullptr);
+        
+        // Aggregate timing data
+        acc_load_s += thread_data[i].total_load_time;
+        acc_resize_s += thread_data[i].total_resize_time;
+        acc_normalize_s += thread_data[i].total_normalize_time;
+        acc_pyramid_s += thread_data[i].total_pyramid_time;
+        acc_bandproc_s += thread_data[i].total_bandproc_time;
+        frame_count += thread_data[i].frames_processed;
+        
+        // Aggregate signal data
         for (const auto& pair : thread_data[i].signals) {
             signals[pair.first].insert(signals[pair.first].end(), pair.second.begin(), pair.second.end());
         }
+    }
+    
+    // Calculate per-frame averages
+    if (frame_count > 0) {
+        acc_load_s /= frame_count;
+        acc_resize_s /= frame_count;
+        acc_normalize_s /= frame_count;
+        acc_pyramid_s /= frame_count;
+        acc_bandproc_s /= frame_count;
     }
     
     std::cout << "\nTotal frames processed: " << nframes << std::endl;
@@ -168,14 +227,14 @@ std::vector<double> soundFromVideoStreaming(const std::string& frames_dir,
 
     std::cout << "\n\n=== Timing Report (soundFromVideoStreaming) ===" << std::endl;
     std::cout << "Init (first frame + pyramid): " << init_time.count() << " s" << std::endl;
-    // if (frame_count > 0) {
-    //     std::cout << "Per-frame average (over " << frame_count << ")" << std::endl;
-    //     std::cout << "  Load:       " << acc_load_s << " s" << std::endl;
-    //     std::cout << "  Resize:     " << acc_resize_s << " s" << std::endl;
-    //     std::cout << "  Normalize:  " << acc_normalize_s << " s" << std::endl;
-    //     std::cout << "  Pyramid:    " << acc_pyramid_s << " s" << std::endl;
-    //     std::cout << "  Band proc:  " << acc_bandproc_s << " s" << std::endl;
-    // }
+    if (frame_count > 0) {
+        std::cout << "Per-frame average (over " << frame_count << ")" << std::endl;
+        std::cout << "  Load:       " << acc_load_s << " s" << std::endl;
+        std::cout << "  Resize:     " << acc_resize_s << " s" << std::endl;
+        std::cout << "  Normalize:  " << acc_normalize_s << " s" << std::endl;
+        std::cout << "  Pyramid:    " << acc_pyramid_s << " s" << std::endl;
+        std::cout << "  Band proc:  " << acc_bandproc_s << " s" << std::endl;
+    }
     std::cout << "Align + sum:  " << align_time.count() << " s" << std::endl;
     std::cout << "Filter:       " << filter_time.count() << " s" << std::endl;
     std::cout << "Scale:        " << scale_time.count() << " s" << std::endl;
