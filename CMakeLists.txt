@@ -38,6 +38,8 @@ set(HEADERS
 # Create executable
 add_executable(visual_microphone ${SOURCES} ${HEADERS})
 
+# Link libraries
+target_link_libraries(visual_microphone PRIVATE pthread)
 
 # Installation
 install(TARGETS visual_microphone DESTINATION bin)
