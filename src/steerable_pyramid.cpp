@@ -3,13 +3,15 @@
 #include <cmath>
 #include <iostream>
 #include <signal_processing.h>
+#include <vector>
 
 namespace visualmic {
-
 
 SteerablePyramidFreq::SteerablePyramidFreq(const Matrix2D<double>& image, int nscale, int norient)
     : num_scales(nscale), num_orientations(norient + 1) {
     
+    pthread_mutex_init(&pyr_mutex, NULL);
+
     Matrix2D<double> img_double = image;
     
     int rows = img_double.rows;
@@ -25,21 +27,21 @@ SteerablePyramidFreq::SteerablePyramidFreq(const Matrix2D<double>& image, int ns
     Matrix2D<Complex> fft_image = img_complex;
     fft2D(fft_image);
     
-    Matrix2D<double> fx, fy;
-    createFrequencyGrid(rows, cols, fx, fy);
-    
     Matrix2D<double> highpass_mask(rows, cols, 1.0);
     
     for (int scale = 0; scale < num_scales; ++scale) {
         Matrix2D<double> radial_mask = buildRadialMask(rows, cols, scale, num_scales);
         
+        std::vector<pthread_t> threads(num_orientations);
+        std::vector<ThreadData> thread_data(num_orientations);
+
         for (int orient = 0; orient < num_orientations; ++orient) {
-            Matrix2D<double> angular_mask = buildAngularMask(rows, cols, orient, num_orientations);
-            Matrix2D<double> combined_mask = elementwiseMultiply(radial_mask, angular_mask);
-            Matrix2D<Complex> band_coeffs = applyFrequencyFilter(fft_image, combined_mask);
-            
-            pyr_coeffs[BandKey(scale, orient)] = band_coeffs;
-            highpass_mask = matrixSubtract(highpass_mask, combined_mask);
+            thread_data[orient] = {this, &fft_image, &highpass_mask, &radial_mask, scale, orient};
+            pthread_create(&threads[orient], NULL, process_orientation_thread, &thread_data[orient]);
+        }
+
+        for (int orient = 0; orient < num_orientations; ++orient) {
+            pthread_join(threads[orient], NULL);
         }
     }
     
@@ -49,6 +51,29 @@ SteerablePyramidFreq::SteerablePyramidFreq(const Matrix2D<double>& image, int ns
     
     Matrix2D<Complex> highpass_coeffs = applyFrequencyFilter(fft_image, highpass_mask);
     pyr_coeffs[BandKey(0, -1)] = highpass_coeffs;
+}
+
+SteerablePyramidFreq::~SteerablePyramidFreq() {
+    pthread_mutex_destroy(&pyr_mutex);
+}
+
+void* SteerablePyramidFreq::process_orientation_thread(void* arg) {
+    ThreadData* data = static_cast<ThreadData*>(arg);
+    SteerablePyramidFreq* self = data->pyramid;
+
+    int rows = data->fft_image->rows;
+    int cols = data->fft_image->cols;
+
+    Matrix2D<double> angular_mask = self->buildAngularMask(rows, cols, data->orient, self->num_orientations);
+    Matrix2D<double> combined_mask = elementwiseMultiply(*data->radial_mask, angular_mask);
+    Matrix2D<Complex> band_coeffs = self->applyFrequencyFilter(*data->fft_image, combined_mask);
+
+    pthread_mutex_lock(&self->pyr_mutex);
+    self->pyr_coeffs[BandKey(data->scale, data->orient)] = band_coeffs;
+    *data->highpass_mask = matrixSubtract(*data->highpass_mask, combined_mask);
+    pthread_mutex_unlock(&self->pyr_mutex);
+
+    return NULL;
 }
 
 void SteerablePyramidFreq::createFrequencyGrid(int rows, int cols, 
