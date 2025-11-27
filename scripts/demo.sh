@@ -19,12 +19,10 @@ if [ ! -f "./build/visual_microphone" ]; then
     echo "  cmake .. && make"
     exit 1
 fi
-
-EXECUTABLE="time ./build/visual_microphone"
-
 INPUT_VIDEO="$1"
+MPI_PROC_NUMBER="$2"
 FPS=2200
-DOWNSAMPLE=0.1
+DOWNSAMPLE=1
 NSCALE=1
 NORIENT=2
 # Extract base name for output files
@@ -35,8 +33,12 @@ BASENAME=${INPUT_VIDEO##*/}
 OUTPUT_DIR="./output"
 mkdir -p "$OUTPUT_DIR"
 
+MPI_PROCS=${MPI_PROC_NUMBER:-1}
+EXECUTABLE="time mpirun --oversubscribe -np ${MPI_PROCS} ./build/visual_microphone"
+
 # Run with default parameters
 echo -e "${YELLOW}Running with default parameters...${NC}"
+echo "MPI processes : ${MPI_PROCS}"
 echo "Output directory: $OUTPUT_DIR"
 echo
 

@@ -8,6 +8,7 @@
 #include <map>
 #include <cmath>
 #include <chrono>
+#include <iomanip>
 #include <mpi.h>
 
 namespace visualmic {
@@ -77,6 +78,7 @@ std::vector<double> soundFromVideoStreaming(const std::string& frames_dir,
     int start_idx = rank * frames_per_process + std::min(rank, remainder);
     int end_idx = start_idx + frames_per_process + (rank < remainder ? 1 : 0);
     
+    auto frames_processing_start = std::chrono::high_resolution_clock::now();
     for (int idx = start_idx; idx < end_idx; ++idx) {
         auto t_load_start = std::chrono::high_resolution_clock::now();
         const auto& frame_file = frame_files[idx];
@@ -148,8 +150,27 @@ std::vector<double> soundFromVideoStreaming(const std::string& frames_dir,
             std::cout << "\rProcessed " << frame_count << "/" << end_idx - start_idx << " frames" << std::flush;
         }
     }
+    auto frames_processing_end = std::chrono::high_resolution_clock::now();
+    auto frames_processing_time = std::chrono::duration_cast<std::chrono::duration<double>>(frames_processing_end - frames_processing_start);
     
-    std::cout << "rank: " << rank << "\nTotal frames processed: " << frame_count << std::endl;
+    int global_frame_count = 0;
+    MPI_Allreduce(&frame_count, &global_frame_count, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+    
+    double total_acc_load_s = 0.0;
+    double total_acc_resize_s = 0.0;
+    double total_acc_normalize_s = 0.0;
+    double total_acc_pyramid_s = 0.0;
+    double total_acc_bandproc_s = 0.0;
+    double max_frames_processing_time = 0.0;
+    
+    double local_frames_processing_time = frames_processing_time.count();
+    
+    MPI_Reduce(&acc_load_s, &total_acc_load_s, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&acc_resize_s, &total_acc_resize_s, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&acc_normalize_s, &total_acc_normalize_s, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&acc_pyramid_s, &total_acc_pyramid_s, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&acc_bandproc_s, &total_acc_bandproc_s, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&local_frames_processing_time, &max_frames_processing_time, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
         
     auto align_start = std::chrono::high_resolution_clock::now();
     std::vector<double> sound(frame_count, 0.0);
@@ -173,31 +194,66 @@ std::vector<double> soundFromVideoStreaming(const std::string& frames_dir,
     auto align_end = std::chrono::high_resolution_clock::now();
     auto align_time = std::chrono::duration_cast<std::chrono::duration<double>>(align_end - align_start);
     
+    /*filter the sound*/
     auto filter_start = std::chrono::high_resolution_clock::now();
     auto sos = ButterworthFilter::butter(3, 0.02, "highpass");
     std::vector<double> filtered_sound = ButterworthFilter::sosfilt(sos, sound);
     auto filter_end = std::chrono::high_resolution_clock::now();
     auto filter_time = std::chrono::duration_cast<std::chrono::duration<double>>(filter_end - filter_start);
     
+    /*scale the sound*/
     auto scale_start = std::chrono::high_resolution_clock::now();
     filtered_sound = scaleSound(filtered_sound);
     auto scale_end = std::chrono::high_resolution_clock::now();
     auto scale_time = std::chrono::duration_cast<std::chrono::duration<double>>(scale_end - scale_start);
-
-    std::cout << "\n\nrank: " << rank << std::endl;
-    std::cout << "=== Timing Report (soundFromVideoStreaming) ===" << std::endl;
-    std::cout << "Init (first frame + pyramid): " << init_time.count() << " s" << std::endl;
-    if (frame_count > 0) {
-        std::cout << "Per-frame average (over " << frame_count << ")" << std::endl;
-        std::cout << "  Load:       " << acc_load_s << " s" << std::endl;
-        std::cout << "  Resize:     " << acc_resize_s << " s" << std::endl;
-        std::cout << "  Normalize:  " << acc_normalize_s << " s" << std::endl;
-        std::cout << "  Pyramid:    " << acc_pyramid_s << " s" << std::endl;
-        std::cout << "  Band proc:  " << acc_bandproc_s << " s" << std::endl;
+    
+    double local_align_s = align_time.count();
+    double local_filter_s = filter_time.count();
+    double local_scale_s = scale_time.count();
+    
+    double total_align_s = 0.0;
+    double total_filter_s = 0.0;
+    double total_scale_s = 0.0;
+    
+    MPI_Reduce(&local_align_s, &total_align_s, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&local_filter_s, &total_filter_s, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&local_scale_s, &total_scale_s, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    
+    if (rank == 0) {
+        std::cout << "\n\n=== Timing Report (soundFromVideoStreaming) ===" << std::endl;
+        std::cout << "Init (first frame + pyramid): " << std::fixed << std::setprecision(5) << init_time.count() << " s" << std::endl;
+        std::cout << "Total frames processed: " << global_frame_count << " using " << size << " MPI ranks" << std::endl;
+        
+        if (global_frame_count > 0) {
+            std::cout << "\nPre-processing (parallel region)" << std::endl;
+            std::cout << "  Wall-clock (max rank): " << std::fixed << std::setprecision(5) << max_frames_processing_time << " s" << std::endl;
+            std::cout << "  Avg per frame (wall-clock): " << std::fixed << std::setprecision(5) << (max_frames_processing_time / global_frame_count) << " s" << std::endl;
+            
+            auto printModule = [&](const std::string& name, double total_cpu_s) {
+                double avg_ms = (total_cpu_s / global_frame_count) * 1000.0;
+                double total_ms = total_cpu_s * 1000.0;
+                std::cout << "  " << name << ": avg " << std::setw(9) << std::fixed << std::setprecision(4)
+                          << avg_ms << " ms  | total " << std::setw(10) << total_ms << " ms" << std::endl;
+            };
+            
+            printModule("Load     ", total_acc_load_s);
+            if (downsample_factor < 1.0) {
+                printModule("Resize   ", total_acc_resize_s);
+            }
+            printModule("Normalize", total_acc_normalize_s);
+            printModule("Pyramid  ", total_acc_pyramid_s);
+            printModule("Band proc", total_acc_bandproc_s);
+        }
+        
+        std::cout << "\nPost-processing (aggregated CPU time)" << std::endl;
+        double total_postproc_s = total_align_s + total_filter_s + total_scale_s;
+        std::cout << "  Total: " << std::fixed << std::setprecision(5) << total_postproc_s << " s" << std::endl;
+        if (global_frame_count > 0) {
+            std::cout << "  Align + sum:  " << std::fixed << std::setprecision(5) << (total_align_s / global_frame_count) * 1000 << " ms/frame" << std::endl;
+            std::cout << "  Filter:       " << std::fixed << std::setprecision(5) << (total_filter_s / global_frame_count) * 1000 << " ms/frame" << std::endl;
+            std::cout << "  Scale:        " << std::fixed << std::setprecision(5) << (total_scale_s / global_frame_count) * 1000 << " ms/frame" << std::endl;
+        }
     }
-    std::cout << "Align + sum:  " << align_time.count() << " s" << std::endl;
-    std::cout << "Filter:       " << filter_time.count() << " s" << std::endl;
-    std::cout << "Scale:        " << scale_time.count() << " s" << std::endl;
     
     return filtered_sound;
 }
