@@ -181,14 +181,7 @@ std::vector<double> soundFromVideoStreaming(const std::string& frames_dir,
         }
     }
     
-    // Calculate per-frame averages
-    if (frame_count > 0) {
-        acc_load_s /= frame_count;
-        acc_resize_s /= frame_count;
-        acc_normalize_s /= frame_count;
-        acc_pyramid_s /= frame_count;
-        acc_bandproc_s /= frame_count;
-    }
+
     
     std::cout << "\nTotal frames processed: " << nframes << std::endl;
         
@@ -205,7 +198,7 @@ std::vector<double> soundFromVideoStreaming(const std::string& frames_dir,
     for (auto& sig_pair : signals) {
         std::vector<double> sig = sig_pair.second;
         
-        std::vector<double> sig_aligned = alignVectors(sig, reference_signal);
+        std::vector<double> sig_aligned = alignVectors(sig, reference_signal, num_threads);
         
         for (size_t i = 0; i < sound.size() && i < sig_aligned.size(); ++i) {
             sound[i] += sig_aligned[i];
@@ -228,7 +221,7 @@ std::vector<double> soundFromVideoStreaming(const std::string& frames_dir,
     std::cout << "\n\n=== Timing Report (soundFromVideoStreaming) ===" << std::endl;
     std::cout << "Init (first frame + pyramid): " << init_time.count() << " s" << std::endl;
     if (frame_count > 0) {
-        std::cout << "Per-frame average (over " << frame_count << ")" << std::endl;
+        std::cout << "Total processing time (over " << frame_count << " frames)" << std::endl;
         std::cout << "  Load:       " << acc_load_s << " s" << std::endl;
         std::cout << "  Resize:     " << acc_resize_s << " s" << std::endl;
         std::cout << "  Normalize:  " << acc_normalize_s << " s" << std::endl;

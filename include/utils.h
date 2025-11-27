@@ -14,10 +14,15 @@ using ComplexMatrix = std::vector<std::vector<Complex>>;
 std::vector<double> scaleSound(const std::vector<double>& sound);
 
 std::vector<double> alignVectors(const std::vector<double>& v1, 
-                                  const std::vector<double>& v2);
+                                  const std::vector<double>& v2,
+                                  int num_threads);
 
 std::vector<double> convolve(const std::vector<double>& signal, 
                               const std::vector<double>& kernel);
+
+std::vector<double> convolve_threaded(const std::vector<double>& signal,
+                                       const std::vector<double>& kernel,
+                                       int num_threads);
 
 std::vector<double> flipVector(const std::vector<double>& vec);
 
