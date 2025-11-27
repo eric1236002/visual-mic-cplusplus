@@ -21,7 +21,7 @@ if [ ! -f "./build/visual_microphone" ]; then
 fi
 
 EXECUTABLE="time ./build/visual_microphone"
-
+export OMP_NUM_THREADS=16
 INPUT_VIDEO="$1"
 FPS=2200
 DOWNSAMPLE=0.1

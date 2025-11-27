@@ -78,6 +78,8 @@ std::vector<double> soundFromVideoStreaming(const std::string& frames_dir,
     then we process the bands in parallel. 
     Finally we align the signals and sum them.
     ------------------------------------*/
+
+    auto frames_processing_start = std::chrono::high_resolution_clock::now();
     #pragma omp parallel for schedule(static) reduction(+:acc_load_s,acc_resize_s,acc_normalize_s,acc_pyramid_s,acc_bandproc_s)
     for (int frame_idx = 0; frame_idx < nframes; ++frame_idx) {
         const std::string& frame_file = frame_files[frame_idx];
@@ -156,7 +158,8 @@ std::vector<double> soundFromVideoStreaming(const std::string& frames_dir,
     }
 
     frame_count = nframes;
-    
+    auto frames_processing_end = std::chrono::high_resolution_clock::now();
+    auto frames_processing_time = std::chrono::duration_cast<std::chrono::duration<double>>(frames_processing_end - frames_processing_start);
     std::cout << "\nTotal frames processed: " << frame_count << std::endl;
         
     auto align_start = std::chrono::high_resolution_clock::now();
@@ -210,15 +213,17 @@ std::vector<double> soundFromVideoStreaming(const std::string& frames_dir,
     std::cout << "Init (first frame + pyramid): " << init_time.count() << " s" << std::endl;
     if (frame_count > 0) {
         std::cout << "Per-frame average (over " << frame_count << ")" << std::endl;
-        std::cout << "  Load:       " << std::fixed << std::setprecision(5) << (acc_load_s / frame_count) * 1000 << " ms" << std::endl;
-        std::cout << "  Resize:     " << std::fixed << std::setprecision(5) << (acc_resize_s / frame_count) * 1000 << " ms" << std::endl;
-        std::cout << "  Normalize:  " << std::fixed << std::setprecision(5) << (acc_normalize_s / frame_count) * 1000 << " ms" << std::endl;
-        std::cout << "  Pyramid:    " << std::fixed << std::setprecision(5) << (acc_pyramid_s / frame_count) * 1000 << " ms" << std::endl;
-        std::cout << "  Band proc:  " << std::fixed << std::setprecision(5) << (acc_bandproc_s / frame_count) * 1000 << " ms" << std::endl;
+        std::cout << "Pre-processing: " << std::fixed << std::setprecision(5) << frames_processing_time.count() << " s" << std::endl;
+        std::cout << "  Load:       " << std::fixed << std::setprecision(5) << acc_load_s / frame_count * 1000<< " ms" << std::endl;
+        std::cout << "  Resize:     " << std::fixed << std::setprecision(5) << acc_resize_s / frame_count * 1000 << " ms" << std::endl;
+        std::cout << "  Normalize:  " << std::fixed << std::setprecision(5) << acc_normalize_s / frame_count * 1000 << " ms" << std::endl;
+        std::cout << "  Pyramid:    " << std::fixed << std::setprecision(5) << acc_pyramid_s / frame_count * 1000 << " ms" << std::endl;
+        std::cout << "  Band proc:  " << std::fixed << std::setprecision(5) << acc_bandproc_s / frame_count * 1000 << " ms" << std::endl;
     }
-    std::cout << "Align + sum:  " << std::fixed << std::setprecision(5) << (align_time.count() / frame_count) * 1000 << " ms" << std::endl;
-    std::cout << "Filter:       " << std::fixed << std::setprecision(5) << (filter_time.count() / frame_count) * 1000 << " ms" << std::endl;
-    std::cout << "Scale:        " << std::fixed << std::setprecision(5) << (scale_time.count() / frame_count) * 1000 << " ms" << std::endl;
+    std::cout << "Post-processing: " << std::fixed << std::setprecision(5) << (align_time.count() + filter_time.count() + scale_time.count()) << " s" << std::endl;
+    std::cout << "  Align + sum:  " << std::fixed << std::setprecision(5) << (align_time.count() / frame_count) * 1000 << " ms" << std::endl;
+    std::cout << "  Filter:       " << std::fixed << std::setprecision(5) << (filter_time.count() / frame_count) * 1000 << " ms" << std::endl;
+    std::cout << "  Scale:        " << std::fixed << std::setprecision(5) << (scale_time.count() / frame_count) * 1000 << " ms" << std::endl;
     
     return filtered_sound;
 }
