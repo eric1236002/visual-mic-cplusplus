@@ -13,6 +13,9 @@
 
 namespace visualmic {
 
+// Forward declaration
+void* loader_thread(void* thread_arg);
+
 Matrix2D<double> resizeImage(const Matrix2D<double>& img, double scale_factor) {
     int new_rows = static_cast<int>(img.rows * scale_factor);
     int new_cols = static_cast<int>(img.cols * scale_factor);
@@ -31,13 +34,24 @@ void* process_frames_thread(void* thread_arg) {
     data->total_bandproc_time = 0.0;
     data->frames_processed = 0;
 
-    for (int i = data->start_frame; i < data->end_frame; ++i) {
-        const std::string& frame_file = (*data->frame_files)[i];
-        
+    while (true) {
+        pthread_mutex_lock(data->queue_mutex);
+        while (data->frame_queue->empty() && !(*data->loading_complete)) {
+            pthread_cond_wait(data->queue_cond, data->queue_mutex);
+        }
+
+        if (data->frame_queue->empty() && *data->loading_complete) {
+            pthread_mutex_unlock(data->queue_mutex);
+            break; // All frames processed
+        }
+
         auto load_start = std::chrono::high_resolution_clock::now();
-        Matrix2D<double> gray_frame = loadPGMFrame(frame_file);
+        Matrix2D<double> gray_frame = data->frame_queue->front();
+        data->frame_queue->pop();
+        pthread_mutex_unlock(data->queue_mutex);
         auto load_end = std::chrono::high_resolution_clock::now();
         data->total_load_time += std::chrono::duration_cast<std::chrono::duration<double>>(load_end - load_start).count();
+
 
         auto resize_start = std::chrono::high_resolution_clock::now();
         if (data->downsample_factor < 1.0) {
@@ -95,6 +109,22 @@ void* process_frames_thread(void* thread_arg) {
     return nullptr;
 }
 
+void* loader_thread(void* thread_arg) {
+    ThreadData* data = static_cast<ThreadData*>(thread_arg);
+
+    for (int i = data->start_frame; i < data->end_frame; ++i) {
+        const std::string& frame_file = (*data->frame_files)[i];
+        Matrix2D<double> gray_frame = loadPGMFrame(frame_file);
+
+        pthread_mutex_lock(data->queue_mutex);
+        data->frame_queue->push(gray_frame);
+        pthread_cond_signal(data->queue_cond);
+        pthread_mutex_unlock(data->queue_mutex);
+    }
+
+    return nullptr;
+}
+
 
 std::vector<double> soundFromVideoStreaming(const std::string& frames_dir,
                                             int nscale, 
@@ -132,29 +162,71 @@ std::vector<double> soundFromVideoStreaming(const std::string& frames_dir,
         num_threads = sysconf(_SC_NPROCESSORS_ONLN);
     }
     
-    std::cout << "Using " << num_threads << " threads for processing" << std::endl;
-    std::vector<ThreadData> thread_data(num_threads);
-    int frames_per_thread = nframes / num_threads;
+    int num_loader_threads = 1;
+    int num_processor_threads = num_threads - num_loader_threads;
+    if (num_processor_threads <= 0) {
+        num_processor_threads = 1;
+        num_loader_threads = 1;
+    }
 
-    for (int i = 0; i < num_threads; ++i) {
-        thread_data[i].frame_files = &frame_files;
-        thread_data[i].start_frame = i * frames_per_thread;
-        thread_data[i].end_frame = (i == num_threads - 1) ? nframes : (i + 1) * frames_per_thread;
-        thread_data[i].nscale = nscale;
-        thread_data[i].norientation = norientation;
-        thread_data[i].downsample_factor = downsample_factor;
-        thread_data[i].first_pyramid = &first_pyramid;
+    std::cout << "Using " << num_loader_threads << " loader thread(s) and " << num_processor_threads << " processor thread(s)" << std::endl;
+    
+    std::queue<Matrix2D<double>> frame_queue;
+    pthread_mutex_t queue_mutex;
+    pthread_cond_t queue_cond;
+    bool loading_complete = false;
+
+    pthread_mutex_init(&queue_mutex, nullptr);
+    pthread_cond_init(&queue_cond, nullptr);
+
+    std::vector<ThreadData> loader_thread_data(num_loader_threads);
+    int frames_per_loader = nframes / num_loader_threads;
+
+    for (int i = 0; i < num_loader_threads; ++i) {
+        loader_thread_data[i].frame_files = &frame_files;
+        loader_thread_data[i].start_frame = i * frames_per_loader;
+        loader_thread_data[i].end_frame = (i == num_loader_threads - 1) ? nframes : (i + 1) * frames_per_loader;
+        loader_thread_data[i].frame_queue = &frame_queue;
+        loader_thread_data[i].queue_mutex = &queue_mutex;
+        loader_thread_data[i].queue_cond = &queue_cond;
         
-        for (const auto& pair : first_pyramid.getPyrCoeffs()) {
-            thread_data[i].signals[pair.first] = std::vector<double>();
-        }
-
-        int rc = pthread_create(&thread_data[i].thread_id, nullptr, process_frames_thread, &thread_data[i]);
+        int rc = pthread_create(&loader_thread_data[i].thread_id, nullptr, loader_thread, &loader_thread_data[i]);
         if (rc) {
-            std::cerr << "Error:unable to create thread," << rc << std::endl;
+            std::cerr << "Error:unable to create loader thread," << rc << std::endl;
             exit(-1);
         }
     }
+
+    std::vector<ThreadData> processor_thread_data(num_processor_threads);
+    for (int i = 0; i < num_processor_threads; ++i) {
+        processor_thread_data[i].nscale = nscale;
+        processor_thread_data[i].norientation = norientation;
+        processor_thread_data[i].downsample_factor = downsample_factor;
+        processor_thread_data[i].first_pyramid = &first_pyramid;
+        processor_thread_data[i].frame_queue = &frame_queue;
+        processor_thread_data[i].queue_mutex = &queue_mutex;
+        processor_thread_data[i].queue_cond = &queue_cond;
+        processor_thread_data[i].loading_complete = &loading_complete;
+        
+        for (const auto& pair : first_pyramid.getPyrCoeffs()) {
+            processor_thread_data[i].signals[pair.first] = std::vector<double>();
+        }
+
+        int rc = pthread_create(&processor_thread_data[i].thread_id, nullptr, process_frames_thread, &processor_thread_data[i]);
+        if (rc) {
+            std::cerr << "Error:unable to create processor thread," << rc << std::endl;
+            exit(-1);
+        }
+    }
+
+    for (int i = 0; i < num_loader_threads; ++i) {
+        pthread_join(loader_thread_data[i].thread_id, nullptr);
+    }
+
+    pthread_mutex_lock(&queue_mutex);
+    loading_complete = true;
+    pthread_cond_broadcast(&queue_cond);
+    pthread_mutex_unlock(&queue_mutex);
 
     std::map<BandKey, std::vector<double>> signals;
     double acc_load_s = 0.0;
@@ -164,23 +236,25 @@ std::vector<double> soundFromVideoStreaming(const std::string& frames_dir,
     double acc_bandproc_s = 0.0;
     int frame_count = 0;
     
-    for (int i = 0; i < num_threads; ++i) {
-        pthread_join(thread_data[i].thread_id, nullptr);
+    for (int i = 0; i < num_processor_threads; ++i) {
+        pthread_join(processor_thread_data[i].thread_id, nullptr);
         
         // Aggregate timing data
-        acc_load_s += thread_data[i].total_load_time;
-        acc_resize_s += thread_data[i].total_resize_time;
-        acc_normalize_s += thread_data[i].total_normalize_time;
-        acc_pyramid_s += thread_data[i].total_pyramid_time;
-        acc_bandproc_s += thread_data[i].total_bandproc_time;
-        frame_count += thread_data[i].frames_processed;
+        acc_load_s += processor_thread_data[i].total_load_time;
+        acc_resize_s += processor_thread_data[i].total_resize_time;
+        acc_normalize_s += processor_thread_data[i].total_normalize_time;
+        acc_pyramid_s += processor_thread_data[i].total_pyramid_time;
+        acc_bandproc_s += processor_thread_data[i].total_bandproc_time;
+        frame_count += processor_thread_data[i].frames_processed;
         
         // Aggregate signal data
-        for (const auto& pair : thread_data[i].signals) {
+        for (const auto& pair : processor_thread_data[i].signals) {
             signals[pair.first].insert(signals[pair.first].end(), pair.second.begin(), pair.second.end());
         }
     }
     
+    pthread_mutex_destroy(&queue_mutex);
+    pthread_cond_destroy(&queue_cond);
 
     
     std::cout << "\nTotal frames processed: " << nframes << std::endl;
@@ -198,7 +272,7 @@ std::vector<double> soundFromVideoStreaming(const std::string& frames_dir,
     for (auto& sig_pair : signals) {
         std::vector<double> sig = sig_pair.second;
         
-        std::vector<double> sig_aligned = alignVectors(sig, reference_signal, num_threads);
+        std::vector<double> sig_aligned = alignVectors_threaded(sig, reference_signal, num_threads);
         
         for (size_t i = 0; i < sound.size() && i < sig_aligned.size(); ++i) {
             sound[i] += sig_aligned[i];
@@ -236,4 +310,3 @@ std::vector<double> soundFromVideoStreaming(const std::string& frames_dir,
 }
 
 } // namespace visualmic
-

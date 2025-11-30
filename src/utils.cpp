@@ -128,7 +128,70 @@ std::vector<double> rollVector(const std::vector<double>& vec, int shift) {
     return result;
 }
 
+struct RollVectorThreadData {
+    const std::vector<double>* vec;
+    std::vector<double>* result;
+    int shift;
+    int start_i;
+    int end_i;
+};
+
+void* rollVector_worker(void* arg) {
+    RollVectorThreadData* data = (RollVectorThreadData*)arg;
+    const auto& vec = *data->vec;
+    auto& result = *data->result;
+    int shift = data->shift;
+    int n = vec.size();
+
+    for (int i = data->start_i; i < data->end_i; ++i) {
+        result[i] = vec[(i - shift + n) % n];
+    }
+    return nullptr;
+}
+
+std::vector<double> rollVector_threaded(const std::vector<double>& vec, int shift, int num_threads) {
+    int n = vec.size();
+    if (n == 0) return vec;
+
+    shift = shift % n;
+    if (shift < 0) shift += n;
+
+    std::vector<double> result(n);
+    pthread_t threads[num_threads];
+    RollVectorThreadData thread_data[num_threads];
+    int chunk_size = n / num_threads;
+
+    for (int i = 0; i < num_threads; ++i) {
+        thread_data[i].vec = &vec;
+        thread_data[i].result = &result;
+        thread_data[i].shift = shift;
+        thread_data[i].start_i = i * chunk_size;
+        thread_data[i].end_i = (i == num_threads - 1) ? n : (i + 1) * chunk_size;
+
+        pthread_create(&threads[i], nullptr, rollVector_worker, &thread_data[i]);
+    }
+
+    for (int i = 0; i < num_threads; ++i) {
+        pthread_join(threads[i], nullptr);
+    }
+
+    return result;
+}
+
 std::vector<double> alignVectors(const std::vector<double>& v1, 
+                                  const std::vector<double>& v2) {
+    auto v2_flipped = flipVector(v2);
+    auto acorb = convolve(v1, v2_flipped);
+    
+    auto max_it = std::max_element(acorb.begin(), acorb.end());
+    int maxind = std::distance(acorb.begin(), max_it);
+    
+    int shift = v2.size() - 1 - maxind;
+    
+    return rollVector(v1, shift);
+}
+
+std::vector<double> alignVectors_threaded(const std::vector<double>& v1, 
                                   const std::vector<double>& v2,
                                   int num_threads) {
     auto v2_flipped = flipVector(v2);
@@ -139,7 +202,7 @@ std::vector<double> alignVectors(const std::vector<double>& v1,
     
     int shift = v2.size() - 1 - maxind;
     
-    return rollVector(v1, shift);
+    return rollVector_threaded(v1, shift, num_threads);
 }
 
 double moduloPi(double angle) {

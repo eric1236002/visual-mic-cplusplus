@@ -4,6 +4,7 @@
 #include <vector>
 #include <string>
 #include <map>
+#include <queue>
 #include <pthread.h>
 #include "math_ops.h"
 #include "steerable_pyramid.h"
@@ -26,8 +27,6 @@ struct VideoInfo {
 
 struct ThreadData {
     const std::vector<std::string>* frame_files;
-    int start_frame;
-    int end_frame;
     int nscale;
     int norientation;
     double downsample_factor;
@@ -42,6 +41,14 @@ struct ThreadData {
     double total_pyramid_time;
     double total_bandproc_time;
     int frames_processed;
+
+    // Shared data for producer-consumer
+    std::queue<Matrix2D<double>>* frame_queue;
+    pthread_mutex_t* queue_mutex;
+    pthread_cond_t* queue_cond;
+    bool* loading_complete;
+    int start_frame; // For loader thread
+    int end_frame;   // For loader thread
 };
 
 

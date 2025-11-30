@@ -108,8 +108,12 @@ int main(int argc, char* argv[]) {
         std::cout << "Visual Microphone - Sound Recovery from Video Frames\n";
         std::cout << "====================================================\n" << std::endl;
 
+        visualmic::VideoMetadata metadata;
+        bool metadata_loaded = false;
+
         try {
-            auto metadata = visualmic::loadVideoMetadata(frames_dir);
+            metadata = visualmic::loadVideoMetadata(frames_dir);
+            metadata_loaded = true;
             std::cout << "Video metadata loaded:" << std::endl;
             std::cout << "  FPS: " << metadata.fps << std::endl;
             std::cout << "  Frame count: " << metadata.frame_count << std::endl;
@@ -141,6 +145,11 @@ int main(int argc, char* argv[]) {
         auto extract_time = std::chrono::duration_cast<std::chrono::duration<double>>(extract_end - extract_start);
         
         std::cout << "\nExtraction time: " << extract_time.count() << " seconds" << std::endl;
+
+        if (metadata_loaded) {
+            double avg_time_per_frame = extract_time.count() / metadata.frame_count;
+            std::cout << "Average time per frame: " << avg_time_per_frame * 1000 << " ms" << std::endl;
+        }
 
         std::cout << "\nSaving recovered sound to: " << output_file << std::endl;
         writeWavFile(output_file, sound, sampling_rate);

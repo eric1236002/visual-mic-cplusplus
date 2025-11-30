@@ -14,8 +14,11 @@ using ComplexMatrix = std::vector<std::vector<Complex>>;
 std::vector<double> scaleSound(const std::vector<double>& sound);
 
 std::vector<double> alignVectors(const std::vector<double>& v1, 
-                                  const std::vector<double>& v2,
-                                  int num_threads);
+                                  const std::vector<double>& v2);
+
+std::vector<double> alignVectors_threaded(const std::vector<double>& v1,
+                                          const std::vector<double>& v2,
+                                          int num_threads);
 
 std::vector<double> convolve(const std::vector<double>& signal, 
                               const std::vector<double>& kernel);
