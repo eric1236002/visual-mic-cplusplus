@@ -10,6 +10,10 @@ echo -e "${GREEN}Visual Microphone C++ - Demo Script${NC}"
 echo "======================================"
 echo
 
+cd build
+make
+cd ..
+
 # Check if executable exists
 if [ ! -f "./build/visual_microphone" ]; then
     echo -e "${RED}Error: visual_microphone executable not found!${NC}"
@@ -21,10 +25,17 @@ if [ ! -f "./build/visual_microphone" ]; then
 fi
 
 EXECUTABLE="time ./build/visual_microphone"
+
+
+############## Ablation flags ##########################
 export OMP_NUM_THREADS=16
+export VISUALMIC_PREPROC_PARALLEL=1
+export VISUALMIC_ALIGN_PARALLEL=1
+DOWNSAMPLE=1
+########################################################
+
 INPUT_VIDEO="$1"
 FPS=2200
-DOWNSAMPLE=0.1
 NSCALE=1
 NORIENT=2
 # Extract base name for output files

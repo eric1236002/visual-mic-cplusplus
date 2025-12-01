@@ -8,6 +8,7 @@
 #include <map>
 #include <cmath>
 #include <chrono>
+#include <cstdlib>
 #include <omp.h>
 #include <iomanip>
 namespace visualmic {
@@ -71,6 +72,18 @@ std::vector<double> soundFromVideoStreaming(const std::string& frames_dir,
     double acc_pyramid_s = 0.0;
     double acc_bandproc_s = 0.0;
     
+    // Ablation flags (runtime, via environment variables)
+    // VISUALMIC_PREPROC_PARALLEL=0/1  -> enable/disable parallelism in pre-processing
+    // VISUALMIC_ALIGN_PARALLEL=0/1    -> enable/disable parallelism in align + sum
+    bool enable_preproc_parallel = true;
+    if (const char* env = std::getenv("VISUALMIC_PREPROC_PARALLEL")) {
+        enable_preproc_parallel = std::atoi(env) != 0;
+    }
+    bool enable_align_parallel = false;
+    if (const char* env = std::getenv("VISUALMIC_ALIGN_PARALLEL")) {
+        enable_align_parallel = std::atoi(env) != 0;
+    }
+    
     /*------------------------------------
     Here we process the frames in parallel.
     First we load the frame, then we resize it if needed, 
@@ -80,81 +93,156 @@ std::vector<double> soundFromVideoStreaming(const std::string& frames_dir,
     ------------------------------------*/
 
     auto frames_processing_start = std::chrono::high_resolution_clock::now();
-    #pragma omp parallel for schedule(static) reduction(+:acc_load_s,acc_resize_s,acc_normalize_s,acc_pyramid_s,acc_bandproc_s)
-    for (int frame_idx = 0; frame_idx < nframes; ++frame_idx) {
-        const std::string& frame_file = frame_files[frame_idx];
-
-        auto t_load_start = std::chrono::high_resolution_clock::now();
-        Matrix2D<double> gray_frame_local = loadPGMFrame(frame_file);
-        auto t_load_end = std::chrono::high_resolution_clock::now();
-        acc_load_s += std::chrono::duration_cast<std::chrono::duration<double>>(t_load_end - t_load_start).count();
+    if (enable_preproc_parallel) {
+        // Original parallel pre-processing over frames
+        #pragma omp parallel for schedule(static) reduction(+:acc_load_s,acc_resize_s,acc_normalize_s,acc_pyramid_s,acc_bandproc_s)
+        for (int frame_idx = 0; frame_idx < nframes; ++frame_idx) {
+            const std::string& frame_file = frame_files[frame_idx];
         
-        if (downsample_factor < 1.0) {
-            auto t_resize_start = std::chrono::high_resolution_clock::now();
-            gray_frame_local = resizeImage(gray_frame_local, downsample_factor);
-            auto t_resize_end = std::chrono::high_resolution_clock::now();
-            acc_resize_s += std::chrono::duration_cast<std::chrono::duration<double>>(t_resize_end - t_resize_start).count();
-        }
-        
-        auto t_norm_start = std::chrono::high_resolution_clock::now();
-        Matrix2D<double> norm_frame_local = normalizeMatrix(gray_frame_local);
-        auto t_norm_end = std::chrono::high_resolution_clock::now();
-        acc_normalize_s += std::chrono::duration_cast<std::chrono::duration<double>>(t_norm_end - t_norm_start).count();
-        
-        auto t_pyr_start = std::chrono::high_resolution_clock::now();
-        SteerablePyramidFreq pyramid(norm_frame_local, nscale, norientation - 1);
-        auto pyramid_coeffs = pyramid.getPyrCoeffs();
-        auto t_pyr_end = std::chrono::high_resolution_clock::now();
-        acc_pyramid_s += std::chrono::duration_cast<std::chrono::duration<double>>(t_pyr_end - t_pyr_start).count();
-        
-        auto t_bandproc_start = std::chrono::high_resolution_clock::now();
-
-
-        /*------------------------------------
-        Here we create a vector of pairs of band key and a pair of complex matrices.
-        The first matrix is the coefficients of the current frame, the second matrix is the coefficients of the first frame.
-        This is the preprocessing step for the parallelization of the band processing.
-        ------------------------------------*/
-        std::vector<std::pair<BandKey, std::pair<Matrix2D<Complex>, Matrix2D<Complex>>>> band_tasks;
-        band_tasks.reserve(pyramid_coeffs.size());
-        for (const auto& band_pair : pyramid_coeffs) {
-            BandKey band = band_pair.first;
-            Matrix2D<Complex> coeffs = band_pair.second;
-            Matrix2D<Complex> first_coeffs = first_pyramid_coeffs.at(band);
-            band_tasks.emplace_back(band, std::make_pair(coeffs, first_coeffs));
-        }
-
-        #pragma omp parallel for schedule(dynamic) if(!omp_in_parallel())
-        for (size_t task_idx = 0; task_idx < band_tasks.size(); ++task_idx) {
-            BandKey band = band_tasks[task_idx].first;
-            Matrix2D<Complex> coeffs = band_tasks[task_idx].second.first;
-            Matrix2D<Complex> first_coeffs = band_tasks[task_idx].second.second;
-
-            Matrix2D<double> amp = magnitude(coeffs);
-            Matrix2D<double> angle_curr = phase(coeffs);
-            Matrix2D<double> angle_first = phase(first_coeffs);
+            auto t_load_start = std::chrono::high_resolution_clock::now();
+            Matrix2D<double> gray_frame_local = loadPGMFrame(frame_file);
+            auto t_load_end = std::chrono::high_resolution_clock::now();
+            acc_load_s += std::chrono::duration_cast<std::chrono::duration<double>>(t_load_end - t_load_start).count();
             
-            Matrix2D<double> dphase(angle_curr.rows, angle_curr.cols);
-            for (int i = 0; i < angle_curr.rows; ++i) {
-                for (int j = 0; j < angle_curr.cols; ++j) {
-                    double diff = angle_curr.at(i, j) - angle_first.at(i, j);
-                    dphase.at(i, j) = moduloPi(diff);
-                }
+            if (downsample_factor < 1.0) {
+                auto t_resize_start = std::chrono::high_resolution_clock::now();
+                gray_frame_local = resizeImage(gray_frame_local, downsample_factor);
+                auto t_resize_end = std::chrono::high_resolution_clock::now();
+                acc_resize_s += std::chrono::duration_cast<std::chrono::duration<double>>(t_resize_end - t_resize_start).count();
             }
             
-            Matrix2D<double> amp_squared = elementwiseMultiply(amp, amp);
-            Matrix2D<double> sms = elementwiseMultiply(dphase, amp_squared);
+            auto t_norm_start = std::chrono::high_resolution_clock::now();
+            Matrix2D<double> norm_frame_local = normalizeMatrix(gray_frame_local);
+            auto t_norm_end = std::chrono::high_resolution_clock::now();
+            acc_normalize_s += std::chrono::duration_cast<std::chrono::duration<double>>(t_norm_end - t_norm_start).count();
             
-            double total_amp_squared = matrixSum(amp_squared);
-            double sum_sms = matrixSum(sms);
+            auto t_pyr_start = std::chrono::high_resolution_clock::now();
+            SteerablePyramidFreq pyramid(norm_frame_local, nscale, norientation - 1);
+            auto pyramid_coeffs = pyramid.getPyrCoeffs();
+            auto t_pyr_end = std::chrono::high_resolution_clock::now();
+            acc_pyramid_s += std::chrono::duration_cast<std::chrono::duration<double>>(t_pyr_end - t_pyr_start).count();
+            
+            auto t_bandproc_start = std::chrono::high_resolution_clock::now();
 
-            double signal_value = (total_amp_squared > 1e-10) ? (sum_sms / total_amp_squared) : 0.0;
 
-            signals[band][frame_idx] = signal_value;
+            /*------------------------------------
+            Here we create a vector of pairs of band key and a pair of complex matrices.
+            The first matrix is the coefficients of the current frame, the second matrix is the coefficients of the first frame.
+            This is the preprocessing step for the parallelization of the band processing.
+            ------------------------------------*/
+            std::vector<std::pair<BandKey, std::pair<Matrix2D<Complex>, Matrix2D<Complex>>>> band_tasks;
+            band_tasks.reserve(pyramid_coeffs.size());
+            for (const auto& band_pair : pyramid_coeffs) {
+                BandKey band = band_pair.first;
+                Matrix2D<Complex> coeffs = band_pair.second;
+                Matrix2D<Complex> first_coeffs = first_pyramid_coeffs.at(band);
+                band_tasks.emplace_back(band, std::make_pair(coeffs, first_coeffs));
+            }
+
+            #pragma omp parallel for schedule(dynamic) if(!omp_in_parallel())
+            for (size_t task_idx = 0; task_idx < band_tasks.size(); ++task_idx) {
+                BandKey band = band_tasks[task_idx].first;
+                Matrix2D<Complex> coeffs = band_tasks[task_idx].second.first;
+                Matrix2D<Complex> first_coeffs = band_tasks[task_idx].second.second;
+
+                Matrix2D<double> amp = magnitude(coeffs);
+                Matrix2D<double> angle_curr = phase(coeffs);
+                Matrix2D<double> angle_first = phase(first_coeffs);
+                
+                Matrix2D<double> dphase(angle_curr.rows, angle_curr.cols);
+                for (int i = 0; i < angle_curr.rows; ++i) {
+                    for (int j = 0; j < angle_curr.cols; ++j) {
+                        double diff = angle_curr.at(i, j) - angle_first.at(i, j);
+                        dphase.at(i, j) = moduloPi(diff);
+                    }
+                }
+                
+                Matrix2D<double> amp_squared = elementwiseMultiply(amp, amp);
+                Matrix2D<double> sms = elementwiseMultiply(dphase, amp_squared);
+                
+                double total_amp_squared = matrixSum(amp_squared);
+                double sum_sms = matrixSum(sms);
+
+                double signal_value = (total_amp_squared > 1e-10) ? (sum_sms / total_amp_squared) : 0.0;
+
+                signals[band][frame_idx] = signal_value;
+            }
+
+            auto t_bandproc_end = std::chrono::high_resolution_clock::now();
+            acc_bandproc_s += std::chrono::duration_cast<std::chrono::duration<double>>(t_bandproc_end - t_bandproc_start).count();
         }
+    } else {
+        // Serial pre-processing over frames
+        for (int frame_idx = 0; frame_idx < nframes; ++frame_idx) {
+            const std::string& frame_file = frame_files[frame_idx];
+        
+            auto t_load_start = std::chrono::high_resolution_clock::now();
+            Matrix2D<double> gray_frame_local = loadPGMFrame(frame_file);
+            auto t_load_end = std::chrono::high_resolution_clock::now();
+            acc_load_s += std::chrono::duration_cast<std::chrono::duration<double>>(t_load_end - t_load_start).count();
+            
+            if (downsample_factor < 1.0) {
+                auto t_resize_start = std::chrono::high_resolution_clock::now();
+                gray_frame_local = resizeImage(gray_frame_local, downsample_factor);
+                auto t_resize_end = std::chrono::high_resolution_clock::now();
+                acc_resize_s += std::chrono::duration_cast<std::chrono::duration<double>>(t_resize_end - t_resize_start).count();
+            }
+            
+            auto t_norm_start = std::chrono::high_resolution_clock::now();
+            Matrix2D<double> norm_frame_local = normalizeMatrix(gray_frame_local);
+            auto t_norm_end = std::chrono::high_resolution_clock::now();
+            acc_normalize_s += std::chrono::duration_cast<std::chrono::duration<double>>(t_norm_end - t_norm_start).count();
+            
+            auto t_pyr_start = std::chrono::high_resolution_clock::now();
+            SteerablePyramidFreq pyramid(norm_frame_local, nscale, norientation - 1);
+            auto pyramid_coeffs = pyramid.getPyrCoeffs();
+            auto t_pyr_end = std::chrono::high_resolution_clock::now();
+            acc_pyramid_s += std::chrono::duration_cast<std::chrono::duration<double>>(t_pyr_end - t_pyr_start).count();
+            
+            auto t_bandproc_start = std::chrono::high_resolution_clock::now();
 
-        auto t_bandproc_end = std::chrono::high_resolution_clock::now();
-        acc_bandproc_s += std::chrono::duration_cast<std::chrono::duration<double>>(t_bandproc_end - t_bandproc_start).count();
+
+            std::vector<std::pair<BandKey, std::pair<Matrix2D<Complex>, Matrix2D<Complex>>>> band_tasks;
+            band_tasks.reserve(pyramid_coeffs.size());
+            for (const auto& band_pair : pyramid_coeffs) {
+                BandKey band = band_pair.first;
+                Matrix2D<Complex> coeffs = band_pair.second;
+                Matrix2D<Complex> first_coeffs = first_pyramid_coeffs.at(band);
+                band_tasks.emplace_back(band, std::make_pair(coeffs, first_coeffs));
+            }
+
+            // Serial band processing (no inner OpenMP) for ablation
+            for (size_t task_idx = 0; task_idx < band_tasks.size(); ++task_idx) {
+                BandKey band = band_tasks[task_idx].first;
+                Matrix2D<Complex> coeffs = band_tasks[task_idx].second.first;
+                Matrix2D<Complex> first_coeffs = band_tasks[task_idx].second.second;
+
+                Matrix2D<double> amp = magnitude(coeffs);
+                Matrix2D<double> angle_curr = phase(coeffs);
+                Matrix2D<double> angle_first = phase(first_coeffs);
+                
+                Matrix2D<double> dphase(angle_curr.rows, angle_curr.cols);
+                for (int i = 0; i < angle_curr.rows; ++i) {
+                    for (int j = 0; j < angle_curr.cols; ++j) {
+                        double diff = angle_curr.at(i, j) - angle_first.at(i, j);
+                        dphase.at(i, j) = moduloPi(diff);
+                    }
+                }
+                
+                Matrix2D<double> amp_squared = elementwiseMultiply(amp, amp);
+                Matrix2D<double> sms = elementwiseMultiply(dphase, amp_squared);
+                
+                double total_amp_squared = matrixSum(amp_squared);
+                double sum_sms = matrixSum(sms);
+
+                double signal_value = (total_amp_squared > 1e-10) ? (sum_sms / total_amp_squared) : 0.0;
+
+                signals[band][frame_idx] = signal_value;
+            }
+
+            auto t_bandproc_end = std::chrono::high_resolution_clock::now();
+            acc_bandproc_s += std::chrono::duration_cast<std::chrono::duration<double>>(t_bandproc_end - t_bandproc_start).count();
+        }
     }
 
     frame_count = nframes;
@@ -185,14 +273,33 @@ std::vector<double> soundFromVideoStreaming(const std::string& frames_dir,
     
     std::vector<std::pair<BandKey, std::vector<double>>> signal_pairs(signals.begin(), signals.end());
 
-    for (size_t idx = 0; idx < signal_pairs.size(); ++idx) {
-        signal_pairs[idx].second = alignVectors(signal_pairs[idx].second, reference_signal);
-    }
-    
-    for (const auto& sig_pair : signal_pairs) {
-        const std::vector<double>& sig_aligned = sig_pair.second;
-        for (size_t i = 0; i < sound.size() && i < sig_aligned.size(); ++i) {
-            sound[i] += sig_aligned[i];
+    if (enable_align_parallel) {
+        // Parallel align over bands
+        #pragma omp parallel for schedule(static)
+        for (size_t idx = 0; idx < signal_pairs.size(); ++idx) {
+            signal_pairs[idx].second = alignVectors(signal_pairs[idx].second, reference_signal);
+        }
+        
+        // Parallel sum with atomic accumulation
+        #pragma omp parallel for schedule(static)
+        for (size_t idx = 0; idx < signal_pairs.size(); ++idx) {
+            const std::vector<double>& sig_aligned = signal_pairs[idx].second;
+            for (size_t i = 0; i < sound.size() && i < sig_aligned.size(); ++i) {
+                #pragma omp atomic
+                sound[i] += sig_aligned[i];
+            }
+        }
+    } else {
+        // Original serial align + sum
+        for (size_t idx = 0; idx < signal_pairs.size(); ++idx) {
+            signal_pairs[idx].second = alignVectors(signal_pairs[idx].second, reference_signal);
+        }
+        
+        for (const auto& sig_pair : signal_pairs) {
+            const std::vector<double>& sig_aligned = sig_pair.second;
+            for (size_t i = 0; i < sound.size() && i < sig_aligned.size(); ++i) {
+                sound[i] += sig_aligned[i];
+            }
         }
     }
     auto align_end = std::chrono::high_resolution_clock::now();
