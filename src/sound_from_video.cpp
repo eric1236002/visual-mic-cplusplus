@@ -65,113 +65,145 @@ std::vector<double> soundFromVideoStreaming(const std::string& frames_dir,
     
     int frame_count = 0;
     auto start_time = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double> duration = std::chrono::duration<double>::zero();
     double acc_load_s = 0.0;
     double acc_resize_s = 0.0;
     double acc_normalize_s = 0.0;
     double acc_pyramid_s = 0.0;
     double acc_bandproc_s = 0.0;
     
-    // Divide frames among processes
-    int frames_per_process = frame_files.size() / size;
-    int remainder = frame_files.size() % size;
-    int start_idx = rank * frames_per_process + std::min(rank, remainder);
-    int end_idx = start_idx + frames_per_process + (rank < remainder ? 1 : 0);
-    
     auto frames_processing_start = std::chrono::high_resolution_clock::now();
-    for (int idx = start_idx; idx < end_idx; ++idx) {
-        auto t_load_start = std::chrono::high_resolution_clock::now();
-        const auto& frame_file = frame_files[idx];
-        gray_frame = loadPGMFrame(frame_file);
-        auto t_load_end = std::chrono::high_resolution_clock::now();
-        acc_load_s += std::chrono::duration_cast<std::chrono::duration<double>>(t_load_end - t_load_start).count();
-        
-        if (downsample_factor < 1.0) {
-            auto t_resize_start = std::chrono::high_resolution_clock::now();
-            gray_frame = resizeImage(gray_frame, downsample_factor);
-            auto t_resize_end = std::chrono::high_resolution_clock::now();
-            acc_resize_s += std::chrono::duration_cast<std::chrono::duration<double>>(t_resize_end - t_resize_start).count();
-        }
-        
-        auto t_norm_start = std::chrono::high_resolution_clock::now();
-        norm_frame = normalizeMatrix(gray_frame);
-        auto t_norm_end = std::chrono::high_resolution_clock::now();
-        acc_normalize_s += std::chrono::duration_cast<std::chrono::duration<double>>(t_norm_end - t_norm_start).count();
-        
-        auto t_pyr_start = std::chrono::high_resolution_clock::now();
-        SteerablePyramidFreq pyramid(norm_frame, nscale, norientation - 1);
-        auto pyramid_coeffs = pyramid.getPyrCoeffs();
-        auto t_pyr_end = std::chrono::high_resolution_clock::now();
-        acc_pyramid_s += std::chrono::duration_cast<std::chrono::duration<double>>(t_pyr_end - t_pyr_start).count();
-        
-        auto t_bandproc_start = std::chrono::high_resolution_clock::now();
-        for (const auto& band_pair : pyramid_coeffs) {
-            BandKey band = band_pair.first;
-            Matrix2D<Complex> coeffs = band_pair.second;
-            Matrix2D<Complex> first_coeffs = first_pyramid_coeffs[band];
+    
+    // Only rank 0 processes frames
+    if (rank == 0) {
+        for (int idx = 0; idx < nframes; ++idx) {
+            auto t_load_start = std::chrono::high_resolution_clock::now();
+            const auto& frame_file = frame_files[idx];
+            gray_frame = loadPGMFrame(frame_file);
+            auto t_load_end = std::chrono::high_resolution_clock::now();
+            acc_load_s += std::chrono::duration_cast<std::chrono::duration<double>>(t_load_end - t_load_start).count();
             
-            Matrix2D<double> amp = magnitude(coeffs);
-            Matrix2D<double> angle_curr = phase(coeffs);
-            Matrix2D<double> angle_first = phase(first_coeffs);
+            if (downsample_factor < 1.0) {
+                auto t_resize_start = std::chrono::high_resolution_clock::now();
+                gray_frame = resizeImage(gray_frame, downsample_factor);
+                auto t_resize_end = std::chrono::high_resolution_clock::now();
+                acc_resize_s += std::chrono::duration_cast<std::chrono::duration<double>>(t_resize_end - t_resize_start).count();
+            }
             
-            Matrix2D<double> dphase(angle_curr.rows, angle_curr.cols);
-            for (int i = 0; i < angle_curr.rows; ++i) {
-                for (int j = 0; j < angle_curr.cols; ++j) {
-                    double diff = angle_curr.at(i, j) - angle_first.at(i, j);
-                    dphase.at(i, j) = moduloPi(diff);
+            auto t_norm_start = std::chrono::high_resolution_clock::now();
+            norm_frame = normalizeMatrix(gray_frame);
+            auto t_norm_end = std::chrono::high_resolution_clock::now();
+            acc_normalize_s += std::chrono::duration_cast<std::chrono::duration<double>>(t_norm_end - t_norm_start).count();
+            
+            auto t_pyr_start = std::chrono::high_resolution_clock::now();
+            SteerablePyramidFreq pyramid(norm_frame, nscale, norientation - 1);
+            auto pyramid_coeffs = pyramid.getPyrCoeffs();
+            auto t_pyr_end = std::chrono::high_resolution_clock::now();
+            acc_pyramid_s += std::chrono::duration_cast<std::chrono::duration<double>>(t_pyr_end - t_pyr_start).count();
+            
+            auto t_bandproc_start = std::chrono::high_resolution_clock::now();
+            for (const auto& band_pair : pyramid_coeffs) {
+                BandKey band = band_pair.first;
+                Matrix2D<Complex> coeffs = band_pair.second;
+                Matrix2D<Complex> first_coeffs = first_pyramid_coeffs[band];
+                
+                Matrix2D<double> amp = magnitude(coeffs);
+                Matrix2D<double> angle_curr = phase(coeffs);
+                Matrix2D<double> angle_first = phase(first_coeffs);
+                
+                Matrix2D<double> dphase(angle_curr.rows, angle_curr.cols);
+                for (int i = 0; i < angle_curr.rows; ++i) {
+                    for (int j = 0; j < angle_curr.cols; ++j) {
+                        double diff = angle_curr.at(i, j) - angle_first.at(i, j);
+                        dphase.at(i, j) = moduloPi(diff);
+                    }
+                }
+                
+                Matrix2D<double> amp_squared = elementwiseMultiply(amp, amp);
+                Matrix2D<double> sms = elementwiseMultiply(dphase, amp_squared);
+                
+                double total_amp_squared = matrixSum(amp_squared);
+                double sum_sms = matrixSum(sms);
+                
+                if (total_amp_squared > 1e-10) {
+                    signals[band].push_back(sum_sms / total_amp_squared);
+                } else {
+                    signals[band].push_back(0.0);
                 }
             }
+            auto t_bandproc_end = std::chrono::high_resolution_clock::now();
+            acc_bandproc_s += std::chrono::duration_cast<std::chrono::duration<double>>(t_bandproc_end - t_bandproc_start).count();
             
-            Matrix2D<double> amp_squared = elementwiseMultiply(amp, amp);
-            Matrix2D<double> sms = elementwiseMultiply(dphase, amp_squared);
+            frame_count++;
             
-            double total_amp_squared = matrixSum(amp_squared);
-            double sum_sms = matrixSum(sms);
+            if (frame_count == 100) {
+                auto end_time = std::chrono::high_resolution_clock::now();
+                auto duration = std::chrono::duration_cast<std::chrono::duration<double>>(end_time - start_time);
+                double total_time = duration.count() * (nframes / 100 - 1) / 60;
+                std::cout << "\nCost time: " << duration.count() * 10 << " seconds \nRemaining time: " 
+                        << total_time << " minutes = " << total_time * 60 << " seconds" << std::endl;
+            }
             
-            if (total_amp_squared > 1e-10) {
-                signals[band].push_back(sum_sms / total_amp_squared);
-            } else {
-                signals[band].push_back(0.0);
+            if (frame_count % 100 == 0) {
+                std::cout << "\rProcessed " << frame_count << "/" << nframes << " frames" << std::flush;
             }
         }
-        auto t_bandproc_end = std::chrono::high_resolution_clock::now();
-        acc_bandproc_s += std::chrono::duration_cast<std::chrono::duration<double>>(t_bandproc_end - t_bandproc_start).count();
-        
-        if (rank == 0 && frame_count == 100) {
-            auto end_time = std::chrono::high_resolution_clock::now();
-            duration = std::chrono::duration_cast<std::chrono::duration<double>>(end_time - start_time);
-            double total_time = duration.count() * (nframes / 100 - 1) / 60;
-            std::cout << "\nCost time: " << duration.count() * 10 << " seconds \nRemaining time: " 
-                     << total_time << " minutes = " << total_time * 60 << " seconds" << std::endl;
+        std::cout << std::endl;
+    }
+     // Broadcast frame_count to all processes
+    MPI_Bcast(&frame_count, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    
+    // Broadcast signals map sizes and data to all processes
+    int num_bands = signals.size();
+    MPI_Bcast(&num_bands, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    
+    // Collect band keys and broadcast
+    std::vector<std::pair<int, int>> band_keys;
+    if (rank == 0) {
+        for (const auto& sig_pair : signals) {
+            band_keys.push_back({std::get<0>(sig_pair.first), std::get<1>(sig_pair.first)});
         }
-        frame_count++;
+    } else {
+        band_keys.resize(num_bands);
+    }
+    
+    // Broadcast band keys
+    std::vector<int> band_data(num_bands * 2);
+    if (rank == 0) {
+        for (int i = 0; i < num_bands; ++i) {
+            band_data[i * 2] = band_keys[i].first;
+            band_data[i * 2 + 1] = band_keys[i].second;
+        }
+    }
+    MPI_Bcast(band_data.data(), num_bands * 2, MPI_INT, 0, MPI_COMM_WORLD);
+    
+    // Reconstruct band_keys on non-root processes
+    if (rank != 0) {
+        band_keys.clear();
+        for (int i = 0; i < num_bands; ++i) {
+            band_keys.push_back({band_data[i * 2], band_data[i * 2 + 1]});
+        }
+    }
+    
+    // Broadcast signal data for each band
+    for (int i = 0; i < num_bands; ++i) {
+        BandKey band(band_keys[i].first, band_keys[i].second);
         
-        if (rank == 0 && frame_count % 100 == 0) {
-            std::cout << "\rProcessed " << frame_count << "/" << end_idx - start_idx << " frames" << std::flush;
+        std::vector<double> signal_data;
+        if (rank == 0) {
+            signal_data = signals[band];
+        } else {
+            signal_data.resize(frame_count);
+        }
+        
+        MPI_Bcast(signal_data.data(), frame_count, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        
+        if (rank != 0) {
+            signals[band] = signal_data;
         }
     }
     auto frames_processing_end = std::chrono::high_resolution_clock::now();
     auto frames_processing_time = std::chrono::duration_cast<std::chrono::duration<double>>(frames_processing_end - frames_processing_start);
     
-    int global_frame_count = 0;
-    MPI_Allreduce(&frame_count, &global_frame_count, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
-    
-    double total_acc_load_s = 0.0;
-    double total_acc_resize_s = 0.0;
-    double total_acc_normalize_s = 0.0;
-    double total_acc_pyramid_s = 0.0;
-    double total_acc_bandproc_s = 0.0;
-    double max_frames_processing_time = 0.0;
-    
-    double local_frames_processing_time = frames_processing_time.count();
-    
-    MPI_Reduce(&acc_load_s, &total_acc_load_s, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
-    MPI_Reduce(&acc_resize_s, &total_acc_resize_s, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
-    MPI_Reduce(&acc_normalize_s, &total_acc_normalize_s, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
-    MPI_Reduce(&acc_pyramid_s, &total_acc_pyramid_s, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
-    MPI_Reduce(&acc_bandproc_s, &total_acc_bandproc_s, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
-    MPI_Reduce(&local_frames_processing_time, &max_frames_processing_time, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
-        
     auto align_start = std::chrono::high_resolution_clock::now();
     std::vector<double> sound(frame_count, 0.0);
     
@@ -185,7 +217,9 @@ std::vector<double> soundFromVideoStreaming(const std::string& frames_dir,
     for (auto& sig_pair : signals) {
         std::vector<double> sig = sig_pair.second;
         
-            std::vector<double> sig_aligned = alignVectors(sig, reference_signal);
+        // alignVectors uses MPI-parallel convolution internally
+        // All MPI processes participate in the convolution
+        std::vector<double> sig_aligned = alignVectors(sig, reference_signal);
         
         for (size_t i = 0; i < sound.size() && i < sig_aligned.size(); ++i) {
             sound[i] += sig_aligned[i];
@@ -194,65 +228,57 @@ std::vector<double> soundFromVideoStreaming(const std::string& frames_dir,
     auto align_end = std::chrono::high_resolution_clock::now();
     auto align_time = std::chrono::duration_cast<std::chrono::duration<double>>(align_end - align_start);
     
-    /*filter the sound*/
-    auto filter_start = std::chrono::high_resolution_clock::now();
-    auto sos = ButterworthFilter::butter(3, 0.02, "highpass");
-    std::vector<double> filtered_sound = ButterworthFilter::sosfilt(sos, sound);
-    auto filter_end = std::chrono::high_resolution_clock::now();
-    auto filter_time = std::chrono::duration_cast<std::chrono::duration<double>>(filter_end - filter_start);
-    
-    /*scale the sound*/
-    auto scale_start = std::chrono::high_resolution_clock::now();
-    filtered_sound = scaleSound(filtered_sound);
-    auto scale_end = std::chrono::high_resolution_clock::now();
-    auto scale_time = std::chrono::duration_cast<std::chrono::duration<double>>(scale_end - scale_start);
-    
-    double local_align_s = align_time.count();
-    double local_filter_s = filter_time.count();
-    double local_scale_s = scale_time.count();
-    
-    double total_align_s = 0.0;
-    double total_filter_s = 0.0;
-    double total_scale_s = 0.0;
-    
-    MPI_Reduce(&local_align_s, &total_align_s, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
-    MPI_Reduce(&local_filter_s, &total_filter_s, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
-    MPI_Reduce(&local_scale_s, &total_scale_s, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
-    
+    std::vector<double> filtered_sound;
     if (rank == 0) {
-        std::cout << "\n\n=== Timing Report (soundFromVideoStreaming) ===" << std::endl;
-        std::cout << "Init (first frame + pyramid): " << std::fixed << std::setprecision(5) << init_time.count() << " s" << std::endl;
-        std::cout << "Total frames processed: " << global_frame_count << " using " << size << " MPI ranks" << std::endl;
+        // Filter the sound
+        auto filter_start = std::chrono::high_resolution_clock::now();
+        auto sos = ButterworthFilter::butter(3, 0.02, "highpass");
+        filtered_sound = ButterworthFilter::sosfilt(sos, sound);
+        auto filter_end = std::chrono::high_resolution_clock::now();
+        auto filter_time = std::chrono::duration_cast<std::chrono::duration<double>>(filter_end - filter_start);
         
-        if (global_frame_count > 0) {
-            std::cout << "\nPre-processing (parallel region)" << std::endl;
-            std::cout << "  Wall-clock (max rank): " << std::fixed << std::setprecision(5) << max_frames_processing_time << " s" << std::endl;
-            std::cout << "  Avg per frame (wall-clock): " << std::fixed << std::setprecision(5) << (max_frames_processing_time / global_frame_count) << " s" << std::endl;
+        // Scale the sound
+        auto scale_start = std::chrono::high_resolution_clock::now();
+        filtered_sound = scaleSound(filtered_sound);
+        auto scale_end = std::chrono::high_resolution_clock::now();
+        auto scale_time = std::chrono::duration_cast<std::chrono::duration<double>>(scale_end - scale_start);
+        
+        std::cout << "\n\n=== Timing Report (soundFromVideoStreaming) ===" << std::endl;
+        std::cout << "MPI processes: " << size << std::endl;
+        std::cout << "Init (first frame + pyramid): " << std::fixed << std::setprecision(5) 
+                  << init_time.count() << " s" << std::endl;
+        std::cout << "Total frames processed: " << frame_count << std::endl;
+        
+        if (frame_count > 0) {
+            std::cout << "\nFrame processing (rank 0 only)" << std::endl;
+            std::cout << "  Wall-clock time: " << std::fixed << std::setprecision(5) 
+                      << frames_processing_time.count() << " s" << std::endl;
+            std::cout << "  Avg per frame: " << std::fixed << std::setprecision(5) 
+                      << (frames_processing_time.count() / frame_count) << " s" << std::endl;
             
             auto printModule = [&](const std::string& name, double total_cpu_s) {
-                double avg_ms = (total_cpu_s / global_frame_count) * 1000.0;
+                double avg_ms = (total_cpu_s / frame_count) * 1000.0;
                 double total_ms = total_cpu_s * 1000.0;
                 std::cout << "  " << name << ": avg " << std::setw(9) << std::fixed << std::setprecision(4)
                           << avg_ms << " ms  | total " << std::setw(10) << total_ms << " ms" << std::endl;
             };
             
-            printModule("Load     ", total_acc_load_s);
+            printModule("Load     ", acc_load_s);
             if (downsample_factor < 1.0) {
-                printModule("Resize   ", total_acc_resize_s);
+                printModule("Resize   ", acc_resize_s);
             }
-            printModule("Normalize", total_acc_normalize_s);
-            printModule("Pyramid  ", total_acc_pyramid_s);
-            printModule("Band proc", total_acc_bandproc_s);
+            printModule("Normalize", acc_normalize_s);
+            printModule("Pyramid  ", acc_pyramid_s);
+            printModule("Band proc", acc_bandproc_s);
         }
         
-        std::cout << "\nPost-processing (aggregated CPU time)" << std::endl;
-        double total_postproc_s = total_align_s + total_filter_s + total_scale_s;
-        std::cout << "  Total: " << std::fixed << std::setprecision(5) << total_postproc_s << " s" << std::endl;
-        if (global_frame_count > 0) {
-            std::cout << "  Align + sum:  " << std::fixed << std::setprecision(5) << (total_align_s / global_frame_count) * 1000 << " ms/frame" << std::endl;
-            std::cout << "  Filter:       " << std::fixed << std::setprecision(5) << (total_filter_s / global_frame_count) * 1000 << " ms/frame" << std::endl;
-            std::cout << "  Scale:        " << std::fixed << std::setprecision(5) << (total_scale_s / global_frame_count) * 1000 << " ms/frame" << std::endl;
-        }
+        std::cout << "\nPost-processing" << std::endl;
+        std::cout << "  Align + sum (with parallel): " << std::fixed << std::setprecision(5) 
+                  << align_time.count() << " s" << std::endl;
+        std::cout << "  Filter: " << std::fixed << std::setprecision(5) 
+                  << filter_time.count() << " s" << std::endl;
+        std::cout << "  Scale:  " << std::fixed << std::setprecision(5) 
+                  << scale_time.count() << " s" << std::endl;
     }
     
     return filtered_sound;
