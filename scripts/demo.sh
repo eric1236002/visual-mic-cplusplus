@@ -28,9 +28,9 @@ EXECUTABLE="time ./build/visual_microphone"
 
 
 ############## Ablation flags ##########################
-THREADS=16
+THREADS=8
 PARALLEL_MODE=all
-DOWNSAMPLE=1
+DOWNSAMPLE=0.1
 ########################################################
 
 INPUT_VIDEO="$1"
