@@ -131,7 +131,8 @@ std::vector<double> soundFromVideoStreaming(const std::string& frames_dir,
                                             int nscale, 
                                             int norientation, 
                                             double downsample_factor,
-                                            int num_threads) {
+                                            int num_threads,
+                                            const std::string& parallel_mode) {
     
     std::vector<std::string> frame_files = getFrameFilesList(frames_dir);
     
@@ -168,6 +169,11 @@ std::vector<double> soundFromVideoStreaming(const std::string& frames_dir,
     if (num_processor_threads <= 0) {
         num_processor_threads = 1;
         num_loader_threads = 1;
+    }
+
+    if (parallel_mode != "frame" && parallel_mode != "all") {
+        num_loader_threads = 1;
+        num_processor_threads = 1;
     }
 
     std::cout << "Using " << num_loader_threads << " loader thread(s) and " << num_processor_threads << " processor thread(s)" << std::endl;
@@ -270,10 +276,20 @@ std::vector<double> soundFromVideoStreaming(const std::string& frames_dir,
     
     std::vector<double> reference_signal = signals[reference_band];
     
+    int align_threads = 1;
+    if (parallel_mode == "align" || parallel_mode == "all") {
+        align_threads = num_threads;
+    }
+
     for (auto& sig_pair : signals) {
         std::vector<double> sig = sig_pair.second;
         
-        std::vector<double> sig_aligned = alignVectors_threaded(sig, reference_signal, num_threads);
+        std::vector<double> sig_aligned;
+        if (align_threads > 1) {
+            sig_aligned = alignVectors_threaded(sig, reference_signal, align_threads);
+        } else {
+            sig_aligned = alignVectors(sig, reference_signal);
+        }
         
         for (size_t i = 0; i < sound.size() && i < sig_aligned.size(); ++i) {
             sound[i] += sig_aligned[i];

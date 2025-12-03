@@ -56,7 +56,8 @@ std::vector<double> soundFromVideoStreaming(const std::string& frames_dir,
                                             int nscale, 
                                             int norientation, 
                                             double downsample_factor = 1.0,
-                                            int num_threads = 0);
+                                            int num_threads = 0,
+                                            const std::string& parallel_mode = "all");
 
 } // namespace visualmic
 
