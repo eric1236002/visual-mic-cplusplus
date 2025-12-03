@@ -10,6 +10,7 @@
 #include <chrono>
 #include <unistd.h>
 #include <vector>
+#include <pthread.h>
 
 namespace visualmic {
 
