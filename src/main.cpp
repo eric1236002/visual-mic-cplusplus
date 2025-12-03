@@ -138,51 +138,7 @@ int main(int argc, char* argv[]) {
         }
 
         auto extract_start = std::chrono::high_resolution_clock::now();
-        std::vector<double> local_sound = visualmic::soundFromVideoStreaming(frames_dir, nscale, norientation, downsample_factor);
-        int local_size = local_sound.size();
-        std::vector<int> all_sizes;
-        if (rank == 0)
-            all_sizes.resize(size);
-
-        // Gather all sizes to rank 0
-        MPI_Gather(&local_size, 1, MPI_INT, 
-                all_sizes.data(), 1, MPI_INT, 
-                0, MPI_COMM_WORLD);
-
-        std::vector<int> displacements;
-        std::vector<double> sound;
-
-        if (rank == 0) {
-            displacements.resize(size);
-            displacements[0] = 0;
-            
-            // Calculate where each process's data will go
-            for (int i = 1; i < size; ++i) {
-                displacements[i] = displacements[i-1] + all_sizes[i-1];
-            }
-            
-            // Calculate total size
-            int total_size = displacements[size-1] + all_sizes[size-1];
-            sound.resize(total_size);
-            
-            // std::cout << "Gathering data from " << size << " processes:" << std::endl;
-            // for (int i = 0; i < size; ++i) {
-            //     std::cout << "  Rank " << i << ": " << all_sizes[i] 
-            //             << " elements at offset " << displacements[i] << std::endl;
-            // }
-        }
-
-        // Step 3: Gather all data to rank 0 in rank order
-        MPI_Gatherv(local_sound.data(),        // Send buffer
-                    local_size,                 // Send count
-                    MPI_DOUBLE,                 // Send type
-                    sound.data(),               // Receive buffer (only rank 0)
-                    all_sizes.data(),           // Receive counts (only rank 0)
-                    displacements.data(),       // Displacements (only rank 0)
-                    MPI_DOUBLE,                 // Receive type
-                    0,                          // Root process
-                    MPI_COMM_WORLD);            // Communicator
-
+        std::vector<double> sound = visualmic::soundFromVideoStreaming(frames_dir, nscale, norientation, downsample_factor);
         if (rank == 0) {
             std::cout << "Successfully gathered " << sound.size() 
                     << " total elements" << std::endl;

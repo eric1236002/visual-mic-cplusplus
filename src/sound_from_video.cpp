@@ -171,45 +171,112 @@ std::vector<double> soundFromVideoStreaming(const std::string& frames_dir,
     MPI_Reduce(&acc_pyramid_s, &total_acc_pyramid_s, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
     MPI_Reduce(&acc_bandproc_s, &total_acc_bandproc_s, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
     MPI_Reduce(&local_frames_processing_time, &max_frames_processing_time, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+    // gather signals to global_signals then share to all ranks
+    std::map<BandKey, std::vector<double>> global_signals;
+
+    // --- START: Gather signals to global_signals on Rank 0 ---
+
+    // 1. Determine frame counts and displacements for MPI_Gatherv
+    std::vector<int> recv_counts(size); // Number of frames processed by each rank
+    std::vector<int> displacements(size); // Starting index for each rank's data
+
+    // Share the local frame count with all ranks
+    // frame_count is the local number of frames processed by this rank
+    MPI_Allgather(&frame_count, 1, MPI_INT, recv_counts.data(), 1, MPI_INT, MPI_COMM_WORLD);
+
+    displacements[0] = 0;
+    for (int i = 1; i < size; ++i) {
+        displacements[i] = displacements[i-1] + recv_counts[i-1];
+    }
+
+    // Global vector size (the total number of frames processed by all ranks)
+    int total_global_size = displacements[size - 1] + recv_counts[size - 1];
+
+    // 2. Identify all BandKeys (consistent across all ranks)
+    std::vector<BandKey> all_band_keys;
+    for (const auto& pair : signals) {
+        all_band_keys.push_back(pair.first);
+    }
+
+    // 3. Perform MPI_Gatherv for each BandKey
+    for (const auto& band : all_band_keys) {
+        const std::vector<double>& local_sig = signals.at(band);
         
+        // Global signal vector (only needed on rank 0)
+        std::vector<double> global_sig;
+        global_sig.resize(total_global_size);
+        
+        // Use MPI_Gatherv to collect local signals into global_sig on rank 0
+        for (int i = 0; i < size; ++i)
+            MPI_Gatherv(local_sig.data(), 
+                        frame_count,      
+                        MPI_DOUBLE,       
+                        global_sig.data(),
+                        recv_counts.data(),                       
+                        displacements.data(),                     
+                        MPI_DOUBLE,                               
+                        i,                                        
+                        MPI_COMM_WORLD);
+
+        // Store the gathered signal in global_signals on rank 0
+        global_signals[band] = std::move(global_sig);
+        // Removed MPI_Bcast: Post-processing only happens on rank 0.
+    }
+    // --- END: Gather signals to global_signals on Rank 0 ---
+
+    // --- START: Post-processing (Only on Rank 0) ---
+    // Initialize timing variables for all ranks (only rank 0 will set them non-zero)
+    double local_align_s = 0.0;
+    double local_filter_s = 0.0;
+    double local_scale_s = 0.0;
+    std::vector<double> filtered_sound;
+    
+    // 3. Perform MPI_Gatherv for each BandKey
     auto align_start = std::chrono::high_resolution_clock::now();
-    std::vector<double> sound(frame_count, 0.0);
+    // The resulting sound vector must have the global size
+    std::vector<double> sound(total_global_size, 0.0);
     
     BandKey reference_band(0, 0);
-    if (signals.find(reference_band) == signals.end()) {
+    if (global_signals.find(reference_band) == global_signals.end()) {
         reference_band = BandKey(-1, 0);
     }
     
-    std::vector<double> reference_signal = signals[reference_band];
-    
-    for (auto& sig_pair : signals) {
+    // Correctly use the complete global_signals for the reference
+    std::vector<double> reference_signal = global_signals[reference_band];
+        
+    // Iterate over the complete gathered signals
+    for (auto& sig_pair : global_signals) {
         std::vector<double> sig = sig_pair.second;
         
-            std::vector<double> sig_aligned = alignVectors(sig, reference_signal);
+        // Align and sum the entire signal
+        std::vector<double> sig_aligned = alignVectors(sig, reference_signal);
         
+        // The size check here is critical: sound.size() == total_global_size
         for (size_t i = 0; i < sound.size() && i < sig_aligned.size(); ++i) {
             sound[i] += sig_aligned[i];
         }
     }
-    auto align_end = std::chrono::high_resolution_clock::now();
-    auto align_time = std::chrono::duration_cast<std::chrono::duration<double>>(align_end - align_start);
+    if (rank == 0) {
+        auto align_end = std::chrono::high_resolution_clock::now();
+        local_align_s = std::chrono::duration_cast<std::chrono::duration<double>>(align_end - align_start).count();
+        
+        /*filter the sound*/
+        auto filter_start = std::chrono::high_resolution_clock::now();
+        auto sos = ButterworthFilter::butter(3, 0.02, "highpass");
+        filtered_sound = ButterworthFilter::sosfilt(sos, sound);
+        auto filter_end = std::chrono::high_resolution_clock::now();
+        local_filter_s = std::chrono::duration_cast<std::chrono::duration<double>>(filter_end - filter_start).count();
+        
+        /*scale the sound*/
+        auto scale_start = std::chrono::high_resolution_clock::now();
+        filtered_sound = scaleSound(filtered_sound);
+        auto scale_end = std::chrono::high_resolution_clock::now();
+        local_scale_s = std::chrono::duration_cast<std::chrono::duration<double>>(scale_end - scale_start).count();
+    }
+    // --- END: Post-processing (Only on Rank 0) ---
     
-    /*filter the sound*/
-    auto filter_start = std::chrono::high_resolution_clock::now();
-    auto sos = ButterworthFilter::butter(3, 0.02, "highpass");
-    std::vector<double> filtered_sound = ButterworthFilter::sosfilt(sos, sound);
-    auto filter_end = std::chrono::high_resolution_clock::now();
-    auto filter_time = std::chrono::duration_cast<std::chrono::duration<double>>(filter_end - filter_start);
-    
-    /*scale the sound*/
-    auto scale_start = std::chrono::high_resolution_clock::now();
-    filtered_sound = scaleSound(filtered_sound);
-    auto scale_end = std::chrono::high_resolution_clock::now();
-    auto scale_time = std::chrono::duration_cast<std::chrono::duration<double>>(scale_end - scale_start);
-    
-    double local_align_s = align_time.count();
-    double local_filter_s = filter_time.count();
-    double local_scale_s = scale_time.count();
+    // The timing reduction calls now correctly use the local_ variables 
+    // (which are 0.0 for non-root ranks) before the final output.
     
     double total_align_s = 0.0;
     double total_filter_s = 0.0;
@@ -219,42 +286,47 @@ std::vector<double> soundFromVideoStreaming(const std::string& frames_dir,
     MPI_Reduce(&local_filter_s, &total_filter_s, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
     MPI_Reduce(&local_scale_s, &total_scale_s, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
     
-    if (rank == 0) {
+    // ... (rest of the timing report and return)
+    if (rank == 0){
         std::cout << "\n\n=== Timing Report (soundFromVideoStreaming) ===" << std::endl;
-        std::cout << "Init (first frame + pyramid): " << std::fixed << std::setprecision(5) << init_time.count() << " s" << std::endl;
-        std::cout << "Total frames processed: " << global_frame_count << " using " << size << " MPI ranks" << std::endl;
+        std::cout << "MPI processes: " << size << std::endl;
+        std::cout << "Init (first frame + pyramid): " << std::fixed << std::setprecision(5) 
+                  << init_time.count() << " s" << std::endl;
+        std::cout << "Total frames processed: " << frame_count << std::endl;
         
-        if (global_frame_count > 0) {
-            std::cout << "\nPre-processing (parallel region)" << std::endl;
-            std::cout << "  Wall-clock (max rank): " << std::fixed << std::setprecision(5) << max_frames_processing_time << " s" << std::endl;
-            std::cout << "  Avg per frame (wall-clock): " << std::fixed << std::setprecision(5) << (max_frames_processing_time / global_frame_count) << " s" << std::endl;
+        if (frame_count > 0) {
+            std::cout << "\nFrame processing (rank 0 only)" << std::endl;
+            std::cout << "  Wall-clock time: " << std::fixed << std::setprecision(5) 
+                      << frames_processing_time.count() << " s" << std::endl;
+            std::cout << "  Avg per frame: " << std::fixed << std::setprecision(5) 
+                      << (frames_processing_time.count() / frame_count) << " s" << std::endl;
             
             auto printModule = [&](const std::string& name, double total_cpu_s) {
-                double avg_ms = (total_cpu_s / global_frame_count) * 1000.0;
+                double avg_ms = (total_cpu_s / frame_count) * 1000.0;
                 double total_ms = total_cpu_s * 1000.0;
                 std::cout << "  " << name << ": avg " << std::setw(9) << std::fixed << std::setprecision(4)
                           << avg_ms << " ms  | total " << std::setw(10) << total_ms << " ms" << std::endl;
             };
             
-            printModule("Load     ", total_acc_load_s);
+            printModule("Load     ", acc_load_s);
             if (downsample_factor < 1.0) {
-                printModule("Resize   ", total_acc_resize_s);
+                printModule("Resize   ", acc_resize_s);
             }
-            printModule("Normalize", total_acc_normalize_s);
-            printModule("Pyramid  ", total_acc_pyramid_s);
-            printModule("Band proc", total_acc_bandproc_s);
+            printModule("Normalize", acc_normalize_s);
+            printModule("Pyramid  ", acc_pyramid_s);
+            printModule("Band proc", acc_bandproc_s);
         }
         
-        std::cout << "\nPost-processing (aggregated CPU time)" << std::endl;
-        double total_postproc_s = total_align_s + total_filter_s + total_scale_s;
-        std::cout << "  Total: " << std::fixed << std::setprecision(5) << total_postproc_s << " s" << std::endl;
-        if (global_frame_count > 0) {
-            std::cout << "  Align + sum:  " << std::fixed << std::setprecision(5) << (total_align_s / global_frame_count) * 1000 << " ms/frame" << std::endl;
-            std::cout << "  Filter:       " << std::fixed << std::setprecision(5) << (total_filter_s / global_frame_count) * 1000 << " ms/frame" << std::endl;
-            std::cout << "  Scale:        " << std::fixed << std::setprecision(5) << (total_scale_s / global_frame_count) * 1000 << " ms/frame" << std::endl;
-        }
+        std::cout << "\nPost-processing" << std::endl;
+        std::cout << "  Align + sum (with parallel): " << std::fixed << std::setprecision(5) 
+                  << total_align_s << " s" << std::endl;
+        std::cout << "  Filter: " << std::fixed << std::setprecision(5) 
+                  << total_filter_s << " s" << std::endl;
+        std::cout << "  Scale:  " << std::fixed << std::setprecision(5) 
+                  << total_scale_s << " s" << std::endl;
     }
-    
+    // Non-root ranks will have an empty vector (default initialized) but that is acceptable
+    // as they are not expected to use the result.
     return filtered_sound;
 }
 

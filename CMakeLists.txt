@@ -44,6 +44,7 @@ add_executable(visual_microphone ${SOURCES} ${HEADERS})
 target_link_libraries(visual_microphone 
     PUBLIC 
     MPI::MPI_CXX
+    stdc++fs
 )
 
 # Add MPI compile flags
